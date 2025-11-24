@@ -19,7 +19,7 @@ const extractTextFromImage = async (imagePath = null, imageUrl = null) => {
         formData.append('isOverlayRequired', 'false');
         formData.append('detectOrientation', 'true');
         formData.append('scale', 'true');
-        formData.append('OCREngine', '2');
+        formData.append('OCREngine', '1');
 
         if (imagePath && fs.existsSync(imagePath)) {
             formData.append('file', fs.createReadStream(imagePath));
@@ -38,7 +38,8 @@ const extractTextFromImage = async (imagePath = null, imageUrl = null) => {
                 headers: {
                     ...formData.getHeaders()
                 },
-                timeout: 30000
+                // Timeout yang panjang untuk mengakomodasi free tier
+                timeout: 900000 
             }
         );
 
@@ -81,68 +82,65 @@ const extractTextFromImage = async (imagePath = null, imageUrl = null) => {
 };
 
 /**
- * Parse GMV dari raw text OCR - Enhanced untuk format Indonesia
+ * Parse GMV dari raw text OCR - Enhanced dengan Prioritas GMV Langsung dan dukungan 'K'
  */
 const parseGMVFromText = (text) => {
     try {
         console.log('\n🔍 Starting GMV parsing...');
         
-        // Bersihkan text
         let cleanText = text.replace(/\s+/g, ' ').toUpperCase();
         console.log('📝 Cleaned text:', cleanText.substring(0, 200));
 
-        // === PATTERN 1: GMV Langsung / GMV Total ===
-        const gmvPatterns = [
-            /GMV\s*LANGSUNG[:\s]*RP\s*([\d.,]+)/i,
-            /GMV\s*TOTAL[:\s]*RP\s*([\d.,]+)/i,
-            /GMV[:\s]*RP\s*([\d.,]+)/i,
-            /TOTAL\s*GMV[:\s]*RP\s*([\d.,]+)/i,
-        ];
+        // Regex untuk menangkap angka dengan 'K', separator, atau gabungan
+        const numericRegex = /[\d.,K]+/i;
 
-        for (const pattern of gmvPatterns) {
-            const match = cleanText.match(pattern);
-            if (match && match[1]) {
-                const gmv = cleanNumber(match[1]);
-                if (gmv > 0) {
-                    console.log('✅ Found GMV (Pattern 1):', gmv);
-                    return gmv;
-                }
+        // ===================================
+        // PRIORITY 1: GMV LANGSUNG (sesuai permintaan user)
+        // Match GMV LANGSUNG, membiarkan karakter apa pun (seperti O atau spasi) di antaranya
+        // ===================================
+        const directMatch = cleanText.match(new RegExp(`GMV\\s*LANGSUNG[^a-zA-Z]*RP\\s*(${numericRegex.source})`, 'i'));
+        
+        if (directMatch && directMatch[1]) {
+            const gmv = applyMultiplier(directMatch[1]);
+            if (gmv > 0) {
+                console.log('✅ Found GMV (PRIORITY: LANGSUNG):', gmv);
+                return gmv; // Mengembalikan GMV Langsung dan berhenti
             }
         }
 
-        // === PATTERN 2: Format "Rp0" atau "Rp 15.000" ===
-        const rupiah = cleanText.match(/RP\s*([\d.,]+)/gi);
+        // ===================================
+        // PRIORITY 2: GMV BIASA / GMV TOTAL (Fallback)
+        // ===================================
+        const totalMatch = cleanText.match(new RegExp(`GMV[^a-zA-Z]*RP\\s*(${numericRegex.source})`, 'i'));
+        if (totalMatch && totalMatch[1]) {
+            const gmv = applyMultiplier(totalMatch[1]);
+            if (gmv > 0) {
+                console.log('✅ Found GMV (Fallback: Total GMV):', gmv);
+                return gmv;
+            }
+        }
+        
+        // ===================================
+        // PRIORITY 3: Max Rupiah (Fallback Terakhir)
+        // ===================================
+        const rupiah = cleanText.match(new RegExp(`RP\\s*(${numericRegex.source})`, 'gi'));
         if (rupiah && rupiah.length > 0) {
             console.log('💰 Found Rupiah values:', rupiah);
             
             const amounts = rupiah.map(r => {
-                const numStr = r.replace(/RP\s*/i, '');
-                return cleanNumber(numStr);
+                let numStr = r.replace(/RP\s*/i, '');
+                return applyMultiplier(numStr);
             }).filter(n => n > 0);
 
             if (amounts.length > 0) {
                 const maxAmount = Math.max(...amounts);
-                console.log('✅ Found GMV (Pattern 2 - Max Rupiah):', maxAmount);
+                console.log('✅ Found GMV (Pattern 3 - Max Rupiah):', maxAmount);
                 return maxAmount;
             }
         }
 
-        // === PATTERN 3: Angka tanpa Rp (ambil yang terbesar) ===
-        const numbers = cleanText.match(/\d{1,3}(?:[.,]\d{3})+|\d+/g);
-        if (numbers && numbers.length > 0) {
-            console.log('🔢 Found numbers:', numbers);
-            
-            const parsedNumbers = numbers
-                .map(num => cleanNumber(num))
-                .filter(num => num >= 1000 && num < 10000000000); // Filter: min 1K, max 10M
-            
-            if (parsedNumbers.length > 0) {
-                const maxNumber = Math.max(...parsedNumbers);
-                console.log('✅ Found GMV (Pattern 3 - Largest number):', maxNumber);
-                return maxNumber;
-            }
-        }
-
+        // PATTERN 4: Angka tanpa Rp (diabaikan untuk menjaga fokus pada Rupiah)
+        
         console.log('⚠️ No GMV pattern found, returning 0');
         return 0;
 
@@ -153,13 +151,38 @@ const parseGMVFromText = (text) => {
 };
 
 /**
- * Bersihkan string angka menjadi number
+ * Menerapkan pengali (K = 1000) dan membersihkan string angka menjadi number (float).
+ */
+const applyMultiplier = (numStr) => {
+    let multiplier = 1;
+    let tempStr = numStr.toUpperCase();
+
+    // 1. Cek Suffix 'K'
+    if (tempStr.endsWith('K')) {
+        multiplier = 1000;
+        tempStr = tempStr.slice(0, -1); // Hapus 'K'
+    }
+
+    // 2. Bersihkan dan konversi (menggunakan float untuk desimal)
+    const num = cleanNumber(tempStr);
+    
+    return num * multiplier;
+};
+
+/**
+ * FIXED: Bersihkan string angka menjadi FLOAT.
+ * Mengganti koma desimal (,) menjadi titik (.) dan menghapus pemisah ribuan (.).
  */
 const cleanNumber = (numStr) => {
     try {
-        // Hapus semua karakter kecuali angka
-        const cleaned = numStr.replace(/[^\d]/g, '');
-        const num = parseInt(cleaned, 10);
+        // Asumsi format Indonesia: Titik adalah pemisah ribuan, Koma adalah pemisah desimal
+        let cleaned = numStr.replace(/\./g, ''); // Hapus semua titik (pemisah ribuan)
+        cleaned = cleaned.replace(/,/g, '.'); // Ganti koma (pemisah desimal) menjadi titik
+        
+        // Hapus karakter non-digit/non-titik lainnya.
+        const finalCleaned = cleaned.replace(/[^\d.]/g, '');
+        const num = parseFloat(finalCleaned);
+        
         return isNaN(num) ? 0 : num;
     } catch (error) {
         return 0;
