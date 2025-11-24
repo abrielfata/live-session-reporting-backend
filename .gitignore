@@ -1,0 +1,13 @@
+# Dependencies
+/node_modules
+
+# Environment variables
+.env
+
+# Temporary files created during runtime (e.g., photo downloads)
+/temp
+
+# Logs and npm debug files
+npm-debug.log*
+yarn-debug.log*
+.log
