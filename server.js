@@ -27,6 +27,7 @@ app.use((req, res, next) => {
 // Import routes
 const authRoutes = require('./routes/authRoutes');
 const telegramRoutes = require('./routes/telegramRoutes');
+const reportRoutes = require('./routes/reportRoutes');
 
 // Health check endpoint
 app.get('/', (req, res) => {
