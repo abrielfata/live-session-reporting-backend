@@ -91,7 +91,7 @@ const handleTextInput = async (chatId, telegramUserId, username, textInput) => {
 const processPhotoReport = async (message, chatId, telegramUserId, username) => {
     // 1. Cek User Status sebelum memproses laporan
     const userResult = await query(
-        'SELECT id, full_name FROM users WHERE telegram_user_id = $1',
+        'SELECT id, full_name, is_approved FROM users WHERE telegram_user_id = $1',
         [telegramUserId]
     );
 
@@ -103,8 +103,21 @@ const processPhotoReport = async (message, chatId, telegramUserId, username) => 
         );
         return;
     }
+
+    // ✅ BARU: Cek apakah user sudah di-approve
+    if (!userResult.rows[0].is_approved) {
+        await sendTelegramMessage(
+            chatId,
+            '⏳ *Akun Anda Belum Disetujui*\n\n' +
+            'Pendaftaran Anda sedang menunggu persetujuan dari Manager.\n' +
+            'Anda akan mendapat notifikasi setelah akun Anda diaktifkan.\n\n' +
+            '👤 Nama: ' + userResult.rows[0].full_name,
+            { parse_mode: 'Markdown' }
+        );
+        return;
+    }
     
-    // User sudah terdaftar dan siap
+    // User sudah terdaftar dan approved, lanjutkan proses foto
     const userId = userResult.rows[0].id;
     
     // Ambil foto dengan kualitas terbaik (index terakhir)
