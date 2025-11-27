@@ -15,7 +15,7 @@ app.use(express.urlencoded({ extended: true }));
 app.use((req, res, next) => {
     res.header('Access-Control-Allow-Origin', '*');
     res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
-    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
     
     if (req.method === 'OPTIONS') {
         return res.sendStatus(200);
@@ -29,6 +29,7 @@ const authRoutes = require('./routes/authRoutes');
 const telegramRoutes = require('./routes/telegramRoutes');
 const reportRoutes = require('./routes/reportRoutes'); 
 const userRoutes = require('./routes/userRoutes'); 
+const hostRoutes = require('./routes/hostRoutes'); // ✅ NEW
 
 // Health check endpoint
 app.get('/', (req, res) => {
@@ -40,7 +41,9 @@ app.get('/', (req, res) => {
         endpoints: {
             auth: '/api/auth',
             webhook: '/api/webhook',
-            reports: '/api/reports'
+            reports: '/api/reports',
+            users: '/api/users',
+            hosts: '/api/hosts' // ✅ NEW
         }
     });
 });
@@ -48,8 +51,9 @@ app.get('/', (req, res) => {
 // API Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/webhook', telegramRoutes);
-app.use('/api/reports', reportRoutes); // ✅ FIXED: Added missing route
+app.use('/api/reports', reportRoutes);
 app.use('/api/users', userRoutes);
+app.use('/api/hosts', hostRoutes); // ✅ NEW
 
 // 404 handler
 app.use((req, res) => {
@@ -80,9 +84,14 @@ const server = app.listen(PORT, () => {
     console.log(`   POST   /api/auth/login`);
     console.log(`   GET    /api/auth/me`);
     console.log(`   POST   /api/webhook/telegram`);
-    console.log(`   GET    /api/users/pending (Manager)`); // ✅ TAMBAHKAN INI
-    console.log(`   PUT    /api/users/:userId/approve (Manager)`); // ✅ TAMBAHKAN INI
-    console.log(`   DELETE /api/users/:userId/reject (Manager)`); 
+    console.log(`   GET    /api/users/pending (Manager)`);
+    console.log(`   PUT    /api/users/:userId/approve (Manager)`);
+    console.log(`   DELETE /api/users/:userId/reject (Manager)`);
+    console.log(`   GET    /api/hosts (Manager)`); // ✅ NEW
+    console.log(`   POST   /api/hosts (Manager)`); // ✅ NEW
+    console.log(`   PUT    /api/hosts/:id (Manager)`); // ✅ NEW
+    console.log(`   DELETE /api/hosts/:id (Manager)`); // ✅ NEW
+    console.log(`   PATCH  /api/hosts/:id/toggle-status (Manager)`); // ✅ NEW
     console.log(`   GET    /api/reports (Manager)`);
     console.log(`   GET    /api/reports/statistics (Manager)`);
     console.log(`   GET    /api/reports/my-reports (Host)`);
