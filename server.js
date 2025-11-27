@@ -27,7 +27,8 @@ app.use((req, res, next) => {
 // Import routes
 const authRoutes = require('./routes/authRoutes');
 const telegramRoutes = require('./routes/telegramRoutes');
-const reportRoutes = require('./routes/reportRoutes'); // ✅ FIXED: Added missing import
+const reportRoutes = require('./routes/reportRoutes'); 
+const userRoutes = require('./routes/userRoutes'); 
 
 // Health check endpoint
 app.get('/', (req, res) => {
@@ -48,6 +49,7 @@ app.get('/', (req, res) => {
 app.use('/api/auth', authRoutes);
 app.use('/api/webhook', telegramRoutes);
 app.use('/api/reports', reportRoutes); // ✅ FIXED: Added missing route
+app.use('/api/users', userRoutes);
 
 // 404 handler
 app.use((req, res) => {
@@ -78,6 +80,9 @@ const server = app.listen(PORT, () => {
     console.log(`   POST   /api/auth/login`);
     console.log(`   GET    /api/auth/me`);
     console.log(`   POST   /api/webhook/telegram`);
+    console.log(`   GET    /api/users/pending (Manager)`); // ✅ TAMBAHKAN INI
+    console.log(`   PUT    /api/users/:userId/approve (Manager)`); // ✅ TAMBAHKAN INI
+    console.log(`   DELETE /api/users/:userId/reject (Manager)`); 
     console.log(`   GET    /api/reports (Manager)`);
     console.log(`   GET    /api/reports/statistics (Manager)`);
     console.log(`   GET    /api/reports/my-reports (Host)`);
