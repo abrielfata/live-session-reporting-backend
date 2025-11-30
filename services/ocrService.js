@@ -3,13 +3,20 @@ const FormData = require('form-data');
 const fs = require('fs');
 
 /**
- * Ekstrak teks dari gambar menggunakan OCR.Space API
+ * Ekstrak teks dari gambar dengan retry mechanism
  */
-const extractTextFromImage = async (imagePath = null, imageUrl = null) => {
+const extractTextFromImage = async (imagePath = null, imageUrl = null, retryCount = 0) => {
+    const maxRetries = 2;
+    const timeout = 25000; // 25 detik
+
     try {
+        console.log(`\n🔍 ========== OCR ATTEMPT ${retryCount + 1}/${maxRetries + 1} ==========`);
+        console.log('📂 Image Path:', imagePath);
+        
         const apiKey = process.env.OCRSPACE_API_KEY;
 
         if (!apiKey) {
+            console.error('❌ OCRSPACE_API_KEY not configured');
             throw new Error('OCRSPACE_API_KEY not configured in .env');
         }
 
@@ -19,17 +26,21 @@ const extractTextFromImage = async (imagePath = null, imageUrl = null) => {
         formData.append('isOverlayRequired', 'false');
         formData.append('detectOrientation', 'true');
         formData.append('scale', 'true');
-        formData.append('OCREngine', '1');
+        formData.append('OCREngine', '2'); // Engine 2 lebih baik untuk angka
 
         if (imagePath && fs.existsSync(imagePath)) {
+            const fileStats = fs.statSync(imagePath);
+            console.log('📊 File Size:', (fileStats.size / 1024).toFixed(2), 'KB');
+            
             formData.append('file', fs.createReadStream(imagePath));
-            console.log('📤 Sending image file to OCR.Space...');
         } else if (imageUrl) {
             formData.append('url', imageUrl);
-            console.log('📤 Sending image URL to OCR.Space...');
         } else {
             throw new Error('No valid image path or URL provided');
         }
+
+        console.log('⏳ Sending to OCR.Space API...');
+        const startTime = Date.now();
 
         const response = await axios.post(
             'https://api.ocr.space/parse/image',
@@ -38,25 +49,40 @@ const extractTextFromImage = async (imagePath = null, imageUrl = null) => {
                 headers: {
                     ...formData.getHeaders()
                 },
-                // Timeout yang panjang untuk mengakomodasi free tier
-                timeout: 900000 
+                timeout: timeout
             }
         );
 
-        if (!response.data || response.data.IsErroredOnProcessing) {
-            throw new Error(
-                response.data?.ErrorMessage?.[0] || 'OCR processing failed'
-            );
+        const duration = ((Date.now() - startTime) / 1000).toFixed(2);
+        console.log(`⏱️ Response Time: ${duration}s`);
+
+        if (!response.data) {
+            throw new Error('Empty response from OCR.Space');
+        }
+
+        console.log('📨 OCR Exit Code:', response.data.OCRExitCode);
+        
+        if (response.data.IsErroredOnProcessing) {
+            const errorMsg = response.data.ErrorMessage?.[0] || 'Unknown OCR error';
+            console.error('❌ OCR Processing Error:', errorMsg);
+            throw new Error(errorMsg);
+        }
+
+        if (!response.data.ParsedResults || response.data.ParsedResults.length === 0) {
+            throw new Error('No text detected in image');
         }
 
         const ocrResult = response.data.ParsedResults[0];
         const rawText = ocrResult.ParsedText;
 
-        console.log('✅ OCR Success! Raw text length:', rawText.length);
-        console.log('📄 Raw OCR Text:', rawText.substring(0, 300));
+        console.log('✅ OCR Success! Text length:', rawText.length);
+        console.log('📄 Raw Text (first 300 chars):', rawText.substring(0, 300));
 
         // Parse GMV dari text
         const parsedGMV = parseGMVFromText(rawText);
+
+        console.log('💰 Parsed GMV:', parsedGMV);
+        console.log('========== OCR SUCCESS ==========\n');
 
         return {
             success: true,
@@ -66,11 +92,18 @@ const extractTextFromImage = async (imagePath = null, imageUrl = null) => {
         };
 
     } catch (error) {
-        console.error('❌ OCR Service Error:', error.message);
-        
-        if (error.response) {
-            console.error('OCR API Response Error:', error.response.data);
+        console.error(`❌ OCR Attempt ${retryCount + 1} Failed:`, error.message);
+
+        // Retry jika belum max retries dan bukan API key error
+        if (retryCount < maxRetries && !error.message.includes('API')) {
+            const waitTime = (retryCount + 1) * 2; // 2s, 4s, 6s
+            console.log(`🔄 Retrying in ${waitTime} seconds...`);
+            await new Promise(resolve => setTimeout(resolve, waitTime * 1000));
+            return extractTextFromImage(imagePath, imageUrl, retryCount + 1);
         }
+
+        console.error('❌ All OCR attempts failed');
+        console.log('========== OCR FAILED ==========\n');
 
         return {
             success: false,
@@ -82,21 +115,19 @@ const extractTextFromImage = async (imagePath = null, imageUrl = null) => {
 };
 
 /**
- * Parse GMV dari raw text OCR - Enhanced dengan Prioritas GMV Langsung dan dukungan 'K'
+ * Parse GMV dari raw text OCR
  */
 const parseGMVFromText = (text) => {
     try {
         console.log('\n🔍 Starting GMV parsing...');
         
         let cleanText = text.replace(/\s+/g, ' ').toUpperCase();
-        console.log('📝 Cleaned text:', cleanText.substring(0, 200));
+        console.log('📝 Cleaned text (first 200 chars):', cleanText.substring(0, 200));
 
-        // Regex untuk menangkap angka dengan 'K', separator, atau gabungan
         const numericRegex = /[\d.,K]+/i;
 
         // ===================================
-        // PRIORITY 1: GMV LANGSUNG (sesuai permintaan user)
-        // Match GMV LANGSUNG, membiarkan karakter apa pun (seperti O atau spasi) di antaranya
+        // PRIORITY 1: GMV LANGSUNG
         // ===================================
         const directMatch = cleanText.match(new RegExp(`GMV\\s*LANGSUNG[^a-zA-Z]*RP\\s*(${numericRegex.source})`, 'i'));
         
@@ -104,24 +135,24 @@ const parseGMVFromText = (text) => {
             const gmv = applyMultiplier(directMatch[1]);
             if (gmv > 0) {
                 console.log('✅ Found GMV (PRIORITY: LANGSUNG):', gmv);
-                return gmv; // Mengembalikan GMV Langsung dan berhenti
+                return gmv;
             }
         }
 
         // ===================================
-        // PRIORITY 2: GMV BIASA / GMV TOTAL (Fallback)
+        // PRIORITY 2: GMV TOTAL
         // ===================================
         const totalMatch = cleanText.match(new RegExp(`GMV[^a-zA-Z]*RP\\s*(${numericRegex.source})`, 'i'));
         if (totalMatch && totalMatch[1]) {
             const gmv = applyMultiplier(totalMatch[1]);
             if (gmv > 0) {
-                console.log('✅ Found GMV (Fallback: Total GMV):', gmv);
+                console.log('✅ Found GMV (Total):', gmv);
                 return gmv;
             }
         }
         
         // ===================================
-        // PRIORITY 3: Max Rupiah (Fallback Terakhir)
+        // PRIORITY 3: Max Rupiah
         // ===================================
         const rupiah = cleanText.match(new RegExp(`RP\\s*(${numericRegex.source})`, 'gi'));
         if (rupiah && rupiah.length > 0) {
@@ -134,13 +165,11 @@ const parseGMVFromText = (text) => {
 
             if (amounts.length > 0) {
                 const maxAmount = Math.max(...amounts);
-                console.log('✅ Found GMV (Pattern 3 - Max Rupiah):', maxAmount);
+                console.log('✅ Found GMV (Max Rupiah):', maxAmount);
                 return maxAmount;
             }
         }
 
-        // PATTERN 4: Angka tanpa Rp (diabaikan untuk menjaga fokus pada Rupiah)
-        
         console.log('⚠️ No GMV pattern found, returning 0');
         return 0;
 
@@ -151,35 +180,34 @@ const parseGMVFromText = (text) => {
 };
 
 /**
- * Menerapkan pengali (K = 1000) dan membersihkan string angka menjadi number (float).
+ * Apply multiplier (K = 1000)
  */
 const applyMultiplier = (numStr) => {
     let multiplier = 1;
     let tempStr = numStr.toUpperCase();
 
-    // 1. Cek Suffix 'K'
+    // Check suffix 'K'
     if (tempStr.endsWith('K')) {
         multiplier = 1000;
-        tempStr = tempStr.slice(0, -1); // Hapus 'K'
+        tempStr = tempStr.slice(0, -1);
     }
 
-    // 2. Bersihkan dan konversi (menggunakan float untuk desimal)
+    // Clean dan convert to float
     const num = cleanNumber(tempStr);
     
     return num * multiplier;
 };
 
 /**
- * FIXED: Bersihkan string angka menjadi FLOAT.
- * Mengganti koma desimal (,) menjadi titik (.) dan menghapus pemisah ribuan (.).
+ * Clean number string
  */
 const cleanNumber = (numStr) => {
     try {
-        // Asumsi format Indonesia: Titik adalah pemisah ribuan, Koma adalah pemisah desimal
-        let cleaned = numStr.replace(/\./g, ''); // Hapus semua titik (pemisah ribuan)
-        cleaned = cleaned.replace(/,/g, '.'); // Ganti koma (pemisah desimal) menjadi titik
+        // Format Indonesia: titik = ribuan, koma = desimal
+        let cleaned = numStr.replace(/\./g, ''); // Hapus titik (ribuan)
+        cleaned = cleaned.replace(/,/g, '.'); // Koma jadi titik (desimal)
         
-        // Hapus karakter non-digit/non-titik lainnya.
+        // Hapus karakter non-digit/non-titik
         const finalCleaned = cleaned.replace(/[^\d.]/g, '');
         const num = parseFloat(finalCleaned);
         
