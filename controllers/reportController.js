@@ -37,6 +37,7 @@ const getAllReports = async (req, res) => {
                 r.ocr_raw_text,
                 r.status,
                 r.notes,
+                r.live_duration, 
                 r.created_at,
                 r.updated_at,
                 u.id as host_id,
@@ -110,6 +111,7 @@ const getReportById = async (req, res) => {
                 r.ocr_raw_text,
                 r.status,
                 r.notes,
+                r.live_duration,
                 r.created_at,
                 r.updated_at,
                 u.id as host_id,
@@ -194,6 +196,7 @@ const getMyReports = async (req, res) => {
                 r.ocr_raw_text,
                 r.status,
                 r.notes,
+                r.live_duration,
                 r.created_at,
                 r.updated_at
             FROM reports r

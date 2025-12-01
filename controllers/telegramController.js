@@ -211,6 +211,7 @@ const processPhotoReport = async (message, chatId, telegramUserId, username) => 
 
     console.log('✅ OCR Success!');
     console.log('💰 Parsed GMV:', ocrResult.parsedGMV);
+    console.log('⏱️ Parsed Duration:', ocrResult.parsedDuration);
 
     // 5. Format GMV
     const formattedGMV = new Intl.NumberFormat('id-ID', {
@@ -226,14 +227,16 @@ const processPhotoReport = async (message, chatId, telegramUserId, username) => 
         userId: userId,
         gmv: ocrResult.parsedGMV,
         screenshotUrl: screenshotUrl,
-        ocrRawText: ocrResult.rawText
+        ocrRawText: ocrResult.rawText,
+        duration: ocrResult.parsedDuration 
     });
 
     // 7. Minta konfirmasi
     await sendTelegramMessage(
         chatId,
         `✅ *Screenshot Berhasil Diproses!*\n\n` +
-        `📊 GMV Terdeteksi: ${formattedGMV}\n\n` +
+        `📊 GMV Terdeteksi: ${formattedGMV}\n` +
+        `⏱️ Durasi LIVE: ${ocrResult.parsedDuration || 'Tidak terdeteksi'}\n\n` +
         `━━━━━━━━━━━━━━━━━━━\n` +
         `Apakah data ini sudah benar?\n\n` +
         `• Ketik *Y* atau *Ya* untuk Simpan ✅\n` +
@@ -253,8 +256,7 @@ const handleConfirmation = async (chatId, telegramUserId, textInput) => {
     const currentState = getState(telegramUserId);
 
     if (!currentState || currentState.state !== 'WAITING_CONFIRMATION') {
-        // Tidak ada konfirmasi yang pending
-        return false; // Return false agar bisa di-handle sebagai text biasa
+        return false;
     }
 
     const response = textInput.trim().toUpperCase();
@@ -262,21 +264,22 @@ const handleConfirmation = async (chatId, telegramUserId, textInput) => {
     // User konfirmasi YES
     if (response === 'Y' || response === 'YA' || response === 'YES') {
         console.log('✅ User confirmed: YES');
-        const { userId, gmv, screenshotUrl, ocrRawText } = currentState.data;
+        const { userId, gmv, screenshotUrl, ocrRawText, duration } = currentState.data; // ✅ TAMBAH duration
 
         try {
-            // Save ke database
+            // Save ke database - ✅ UPDATE QUERY INI
             const reportQuery = `
-                INSERT INTO reports (host_id, reported_gmv, screenshot_url, ocr_raw_text, status)
-                VALUES ($1, $2, $3, $4, 'PENDING')
-                RETURNING id, reported_gmv, created_at
+                INSERT INTO reports (host_id, reported_gmv, screenshot_url, ocr_raw_text, status, live_duration)
+                VALUES ($1, $2, $3, $4, 'PENDING', $5)
+                RETURNING id, reported_gmv, live_duration, created_at
             `;
 
             const reportResult = await query(reportQuery, [
                 userId,
                 gmv,
                 screenshotUrl,
-                ocrRawText
+                ocrRawText,
+                duration || null  // ✅ TAMBAH PARAMETER INI
             ]);
 
             const report = reportResult.rows[0];
@@ -289,10 +292,12 @@ const handleConfirmation = async (chatId, telegramUserId, textInput) => {
 
             clearState(telegramUserId);
 
+            // ✅ UPDATE RESPONSE MESSAGE
             await sendTelegramMessage(
                 chatId,
                 `✅ *Laporan Berhasil Disimpan!*\n\n` +
                 `📊 GMV: ${formattedGMV}\n` +
+                `⏱️ Durasi: ${report.live_duration || 'Tidak terdeteksi'}\n` +
                 `🆔 Report ID: #${report.id}\n` +
                 `📅 Waktu: ${new Date(report.created_at).toLocaleString('id-ID')}\n\n` +
                 `Status: Menunggu verifikasi manager`,
@@ -310,7 +315,7 @@ const handleConfirmation = async (chatId, telegramUserId, textInput) => {
             clearState(telegramUserId);
         }
 
-        return true; // Handled
+        return true;
     }
     // User konfirmasi NO
     else if (response === 'N' || response === 'NO' || response === 'TIDAK' || response === 'CANCEL') {

@@ -80,14 +80,17 @@ const extractTextFromImage = async (imagePath = null, imageUrl = null, retryCoun
 
         // Parse GMV dari text
         const parsedGMV = parseGMVFromText(rawText);
+        const parsedDuration = parseDurationFromText(rawText);
 
         console.log('💰 Parsed GMV:', parsedGMV);
+        console.log('⏱️ Parsed Duration:', parsedDuration || 'Not found');
         console.log('========== OCR SUCCESS ==========\n');
 
         return {
             success: true,
             rawText: rawText,
             parsedGMV: parsedGMV,
+            parsedDuration: parsedDuration,
             confidence: ocrResult.TextOrientation || 0
         };
 
@@ -178,7 +181,71 @@ const parseGMVFromText = (text) => {
         return 0;
     }
 };
+/**
+ * Parse Durasi dari raw text OCR
+ */
+const parseDurationFromText = (text) => {
+    try {
+        console.log('\n⏱️ Starting Duration parsing...');
+        
+        let cleanText = text.replace(/\s+/g, ' ').trim();
+        console.log('📝 Text for duration (first 300 chars):', cleanText.substring(0, 300));
 
+        // Pattern 1: "Durasi: X jam Y menit" atau "Durasi: X jam"
+        const pattern1 = /Durasi[:\s]*(\d+)\s*jam(?:\s*(\d+)\s*(?:menit|mnt))?/i;
+        const match1 = cleanText.match(pattern1);
+        
+        if (match1) {
+            const hours = parseInt(match1[1]) || 0;
+            const minutes = parseInt(match1[2]) || 0;
+            
+            if (hours > 0 || minutes > 0) {
+                let duration = '';
+                if (hours > 0) duration += `${hours} jam`;
+                if (minutes > 0) {
+                    if (duration) duration += ' ';
+                    duration += `${minutes} menit`;
+                }
+                
+                console.log('✅ Found Duration (Pattern 1):', duration);
+                return duration;
+            }
+        }
+
+        // Pattern 2: "Durasi: X menit" saja
+        const pattern2 = /Durasi[:\s]*(\d+)\s*(?:menit|mnt)/i;
+        const match2 = cleanText.match(pattern2);
+        
+        if (match2) {
+            const minutes = parseInt(match2[1]) || 0;
+            if (minutes > 0) {
+                const duration = `${minutes} menit`;
+                console.log('✅ Found Duration (Pattern 2):', duration);
+                return duration;
+            }
+        }
+
+        // Pattern 3: Hanya angka jam "X jam"
+        const pattern3 = /(\d+)\s*jam/i;
+        const match3 = cleanText.match(pattern3);
+        
+        if (match3) {
+            const hours = parseInt(match3[1]) || 0;
+            if (hours > 0 && hours <= 24) {
+                const duration = `${hours} jam`;
+                console.log('✅ Found Duration (Pattern 3):', duration);
+                return duration;
+            }
+        }
+
+        console.log('⚠️ No Duration pattern found');
+        return null;
+
+    } catch (error) {
+        console.error('❌ Parse Duration Error:', error.message);
+        return null;
+    }
+};
 /**
  * Apply multiplier (K = 1000)
  */
@@ -227,5 +294,6 @@ const isValidGMV = (gmv) => {
 module.exports = {
     extractTextFromImage,
     parseGMVFromText,
+    parseDurationFromText,
     isValidGMV
 };
