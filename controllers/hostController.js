@@ -1,4 +1,9 @@
 const { query } = require('../config/db');
+// Tambahkan impor untuk fungsi notifikasi Telegram
+const {
+    sendAccountDeactivatedNotification,
+    sendAccountReactivatedNotification
+} = require('./telegramController');
 
 /**
  * GET ALL HOSTS (Manager Only)
@@ -25,7 +30,7 @@ const getAllHosts = async (req, res) => {
         }
 
         const hostQuery = `
-            SELECT 
+            SELECT
                 id,
                 telegram_user_id,
                 username,
@@ -46,7 +51,7 @@ const getAllHosts = async (req, res) => {
         const hostsWithStats = await Promise.all(
             result.rows.map(async (host) => {
                 const statsQuery = `
-                    SELECT 
+                    SELECT
                         COUNT(*) as total_reports,
                         COUNT(CASE WHEN status = 'VERIFIED' THEN 1 END) as verified_reports,
                         COALESCE(SUM(CASE WHEN status = 'VERIFIED' THEN reported_gmv ELSE 0 END), 0) as total_gmv
@@ -54,7 +59,7 @@ const getAllHosts = async (req, res) => {
                     WHERE host_id = $1
                 `;
                 const stats = await query(statsQuery, [host.id]);
-                
+
                 return {
                     ...host,
                     stats: stats.rows[0]
@@ -88,7 +93,7 @@ const getHostById = async (req, res) => {
         const { id } = req.params;
 
         const hostQuery = `
-            SELECT 
+            SELECT
                 id,
                 telegram_user_id,
                 username,
@@ -319,13 +324,18 @@ const deleteHost = async (req, res) => {
 /**
  * TOGGLE HOST ACTIVE STATUS (Manager Only)
  * Aktifkan/nonaktifkan host
+ * ✅ NOW SENDS TELEGRAM NOTIFICATION
  */
 const toggleHostStatus = async (req, res) => {
     try {
         const { id } = req.params;
 
-        // Get current status
-        const checkQuery = "SELECT id, full_name, is_active FROM users WHERE id = $1 AND role = 'HOST'";
+        // Get current status and telegram_user_id
+        const checkQuery = `
+            SELECT id, full_name, is_active, telegram_user_id
+            FROM users
+            WHERE id = $1 AND role = 'HOST'
+        `;
         const checkResult = await query(checkQuery, [id]);
 
         if (checkResult.rows.length === 0) {
@@ -335,7 +345,8 @@ const toggleHostStatus = async (req, res) => {
             });
         }
 
-        const currentStatus = checkResult.rows[0].is_active;
+        const host = checkResult.rows[0];
+        const currentStatus = host.is_active;
         const newStatus = !currentStatus;
 
         // Update status
@@ -348,6 +359,21 @@ const toggleHostStatus = async (req, res) => {
 
         const result = await query(updateQuery, [newStatus, id]);
 
+        // ✅ SEND TELEGRAM NOTIFICATION
+        if (newStatus) {
+            // Account reactivated
+            await sendAccountReactivatedNotification(
+                host.telegram_user_id,
+                host.full_name
+            );
+        } else {
+            // Account deactivated
+            await sendAccountDeactivatedNotification(
+                host.telegram_user_id,
+                host.full_name
+            );
+        }
+
         res.status(200).json({
             success: true,
             message: `Host ${newStatus ? 'activated' : 'deactivated'} successfully`,
@@ -355,6 +381,7 @@ const toggleHostStatus = async (req, res) => {
         });
 
         console.log(`✅ Host ${result.rows[0].full_name} ${newStatus ? 'activated' : 'deactivated'} by Manager`);
+        console.log(`📲 Notification sent to Telegram user ${host.telegram_user_id}`);
 
     } catch (error) {
         console.error('❌ Toggle host status error:', error);
@@ -365,6 +392,7 @@ const toggleHostStatus = async (req, res) => {
         });
     }
 };
+
 
 module.exports = {
     getAllHosts,
