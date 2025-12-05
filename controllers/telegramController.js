@@ -5,7 +5,7 @@ const fs = require('fs');
 const path = require('path');
 
 // ============================================
-// STATE MANAGEMENT (In-memory untuk konfirmasi)
+// STATE MANAGEMENT
 // ============================================
 const userStates = new Map();
 
@@ -20,7 +20,6 @@ const setState = (userId, state, data = {}) => {
 
 const getState = (userId) => {
     const userState = userStates.get(userId);
-    // Auto-expire setelah 10 menit
     if (userState && Date.now() - userState.timestamp > 600000) {
         console.log(`⏰ State expired for user ${userId}`);
         userStates.delete(userId);
@@ -38,21 +37,15 @@ const clearState = (userId) => {
 // HELPER FUNCTIONS UNTUK ONBOARDING
 // ============================================
 
-/**
- * Handle perintah /start
- */
 const handleStartCommand = async (chatId, telegramUserId, username) => {
-    // Clear any existing state
     clearState(telegramUserId);
     
-    // Cari user di database
     const userResult = await query(
         'SELECT id, full_name, role, is_approved FROM users WHERE telegram_user_id = $1',
         [telegramUserId]
     );
 
     if (userResult.rows.length === 0) {
-        // User baru: Masukkan entry sementara dengan full_name 'PENDING'
         await query(
             `INSERT INTO users (telegram_user_id, username, full_name, role)
              VALUES ($1, $2, 'PENDING', 'HOST')`,
@@ -70,14 +63,12 @@ const handleStartCommand = async (chatId, telegramUserId, username) => {
         );
         console.log('✅ New user started registration:', telegramUserId);
     } else if (userResult.rows[0].full_name === 'PENDING') {
-        // User sudah memulai tapi belum memasukkan nama
         setState(telegramUserId, 'WAITING_FULL_NAME');
         await sendTelegramMessage(
             chatId,
             `Mohon masukkan nama lengkap Anda untuk menyelesaikan pendaftaran.`
         );
     } else if (!userResult.rows[0].is_approved) {
-        // User belum di-approve
         await sendTelegramMessage(
             chatId,
             `⏳ *Akun Anda Belum Disetujui*\n\n` +
@@ -87,7 +78,6 @@ const handleStartCommand = async (chatId, telegramUserId, username) => {
             { parse_mode: 'Markdown' }
         );
     } else {
-        // User lama dan sudah approved
         await sendTelegramMessage(
             chatId,
             `Selamat datang kembali, **${userResult.rows[0].full_name}** (${userResult.rows[0].role})!\n\n` +
@@ -97,11 +87,7 @@ const handleStartCommand = async (chatId, telegramUserId, username) => {
     }
 };
 
-/**
- * Handle input nama lengkap saat registrasi
- */
 const handleFullNameInput = async (chatId, telegramUserId, username, fullName) => {
-    // Update user dengan nama lengkap
     await query(
         `UPDATE users 
          SET full_name = $1, username = $2, updated_at = CURRENT_TIMESTAMP
@@ -126,20 +112,15 @@ const handleFullNameInput = async (chatId, telegramUserId, username, fullName) =
 // PHOTO PROCESSING WITH CONFIRMATION
 // ============================================
 
-/**
- * Proses foto dan minta konfirmasi
- */
 const processPhotoReport = async (message, chatId, telegramUserId, username) => {
     console.log('\n📸 ========== PHOTO PROCESSING START ==========');
     
-    // Clear any previous confirmation state
     const previousState = getState(telegramUserId);
     if (previousState && previousState.state === 'WAITING_CONFIRMATION') {
         console.log('🔄 Overriding previous confirmation with new photo');
         clearState(telegramUserId);
     }
     
-    // 1. Cek User Status
     const userResult = await query(
         'SELECT id, full_name, is_approved FROM users WHERE telegram_user_id = $1',
         [telegramUserId]
@@ -153,7 +134,6 @@ const processPhotoReport = async (message, chatId, telegramUserId, username) => 
         return;
     }
 
-    // 2. Cek approval
     if (!userResult.rows[0].is_approved) {
         await sendTelegramMessage(
             chatId,
@@ -167,8 +147,6 @@ const processPhotoReport = async (message, chatId, telegramUserId, username) => 
     }
     
     const userId = userResult.rows[0].id;
-    
-    // 3. Download foto
     const photo = message.photo[message.photo.length - 1];
     const fileId = photo.file_id;
 
@@ -187,11 +165,9 @@ const processPhotoReport = async (message, chatId, telegramUserId, username) => 
         return;
     }
 
-    // 4. Proses OCR
     console.log('🔍 Starting OCR process...');
     const ocrResult = await extractTextFromImage(photoPath);
 
-    // Hapus file setelah diproses
     if (fs.existsSync(photoPath)) {
         fs.unlinkSync(photoPath);
         console.log('🗑️ Temp file deleted');
@@ -213,14 +189,12 @@ const processPhotoReport = async (message, chatId, telegramUserId, username) => 
     console.log('💰 Parsed GMV:', ocrResult.parsedGMV);
     console.log('⏱️ Parsed Duration:', ocrResult.parsedDuration);
 
-    // 5. Format GMV
     const formattedGMV = new Intl.NumberFormat('id-ID', {
         style: 'currency',
         currency: 'IDR',
         minimumFractionDigits: 0
     }).format(ocrResult.parsedGMV);
 
-    // 6. Simpan data sementara untuk konfirmasi
     const screenshotUrl = `https://api.telegram.org/file/bot${process.env.TELEGRAM_BOT_TOKEN}/${fileId}`;
     
     setState(telegramUserId, 'WAITING_CONFIRMATION', {
@@ -231,7 +205,6 @@ const processPhotoReport = async (message, chatId, telegramUserId, username) => 
         duration: ocrResult.parsedDuration 
     });
 
-    // 7. Minta konfirmasi
     await sendTelegramMessage(
         chatId,
         `✅ *Screenshot Berhasil Diproses!*\n\n` +
@@ -249,9 +222,6 @@ const processPhotoReport = async (message, chatId, telegramUserId, username) => 
     console.log('========== PHOTO PROCESSING END ==========\n');
 };
 
-/**
- * Handle konfirmasi Y/N dari user
- */
 const handleConfirmation = async (chatId, telegramUserId, textInput) => {
     const currentState = getState(telegramUserId);
 
@@ -261,13 +231,11 @@ const handleConfirmation = async (chatId, telegramUserId, textInput) => {
 
     const response = textInput.trim().toUpperCase();
 
-    // User konfirmasi YES
     if (response === 'Y' || response === 'YA' || response === 'YES') {
         console.log('✅ User confirmed: YES');
-        const { userId, gmv, screenshotUrl, ocrRawText, duration } = currentState.data; // ✅ TAMBAH duration
+        const { userId, gmv, screenshotUrl, ocrRawText, duration } = currentState.data;
 
         try {
-            // Save ke database - ✅ UPDATE QUERY INI
             const reportQuery = `
                 INSERT INTO reports (host_id, reported_gmv, screenshot_url, ocr_raw_text, status, live_duration)
                 VALUES ($1, $2, $3, $4, 'PENDING', $5)
@@ -279,7 +247,7 @@ const handleConfirmation = async (chatId, telegramUserId, textInput) => {
                 gmv,
                 screenshotUrl,
                 ocrRawText,
-                duration || null  // ✅ TAMBAH PARAMETER INI
+                duration || null
             ]);
 
             const report = reportResult.rows[0];
@@ -292,7 +260,6 @@ const handleConfirmation = async (chatId, telegramUserId, textInput) => {
 
             clearState(telegramUserId);
 
-            // ✅ UPDATE RESPONSE MESSAGE
             await sendTelegramMessage(
                 chatId,
                 `✅ *Laporan Berhasil Disimpan!*\n\n` +
@@ -317,7 +284,6 @@ const handleConfirmation = async (chatId, telegramUserId, textInput) => {
 
         return true;
     }
-    // User konfirmasi NO
     else if (response === 'N' || response === 'NO' || response === 'TIDAK' || response === 'CANCEL') {
         console.log('❌ User confirmed: NO');
         clearState(telegramUserId);
@@ -329,10 +295,9 @@ const handleConfirmation = async (chatId, telegramUserId, textInput) => {
             { parse_mode: 'Markdown' }
         );
 
-        return true; // Handled
+        return true;
     }
 
-    // Input tidak valid untuk konfirmasi
     await sendTelegramMessage(
         chatId,
         `⚠️ *Konfirmasi Tidak Valid*\n\n` +
@@ -342,29 +307,23 @@ const handleConfirmation = async (chatId, telegramUserId, textInput) => {
         { parse_mode: 'Markdown' }
     );
 
-    return true; // Handled
+    return true;
 };
 
-/**
- * Handle input teks biasa
- */
 const handleTextInput = async (chatId, telegramUserId, username, textInput) => {
     console.log('💬 Text input received:', textInput);
     
-    // 1. Check jika ada konfirmasi pending
     const confirmed = await handleConfirmation(chatId, telegramUserId, textInput);
     if (confirmed) {
-        return; // Sudah di-handle sebagai konfirmasi
+        return;
     }
 
-    // 2. Check jika sedang menunggu input nama
     const currentState = getState(telegramUserId);
     if (currentState && currentState.state === 'WAITING_FULL_NAME') {
         await handleFullNameInput(chatId, telegramUserId, username, textInput);
         return;
     }
 
-    // 3. Default: Beri instruksi
     await sendTelegramMessage(
         chatId,
         'Mohon kirimkan *screenshot laporan GMV* atau ketik /start untuk memulai.',
@@ -376,9 +335,6 @@ const handleTextInput = async (chatId, telegramUserId, username, textInput) => {
 // MAIN PROCESSING LOGIC
 // ============================================
 
-/**
- * Fungsi utama untuk memproses update dari Telegram
- */
 const processTelegramUpdate = async (update) => {
     if (!update.message) {
         return;
@@ -390,28 +346,23 @@ const processTelegramUpdate = async (update) => {
     const username = message.from.username || message.from.first_name;
 
     try {
-        // Handle TEXT
         if (message.text) {
             const text = message.text.trim();
             
-            // Handle /start command
             if (text === '/start') {
                 await handleStartCommand(chatId, telegramUserId, username);
                 return; 
             }
             
-            // Handle text input (bisa nama atau konfirmasi)
             await handleTextInput(chatId, telegramUserId, username, text);
             return;
         }
 
-        // Handle PHOTO
         if (message.photo && message.photo.length > 0) {
             await processPhotoReport(message, chatId, telegramUserId, username);
             return;
         }
         
-        // Message lain (tidak text atau photo)
         await sendTelegramMessage(
             chatId,
             'Mohon kirimkan *screenshot laporan GMV* atau ketik /start untuk memulai.',
@@ -427,11 +378,7 @@ const processTelegramUpdate = async (update) => {
     }
 };
 
-/**
- * TELEGRAM WEBHOOK HANDLER
- */
 const handleWebhook = async (req, res) => {
-    // Immediate response
     res.status(200).json({ ok: true, message: 'Processing started asynchronously' });
 
     try {
@@ -445,12 +392,153 @@ const handleWebhook = async (req, res) => {
 };
 
 // ============================================
-// HELPER FUNCTIONS
+// NOTIFICATION FUNCTIONS (NEW)
 // ============================================
 
 /**
- * Download foto dari Telegram
+ * Send notification when HOST account is APPROVED
  */
+const sendAccountApprovedNotification = async (telegramUserId, fullName) => {
+    try {
+        const message = `
+🎉 *Akun Anda Telah Diaktifkan!*
+
+Halo *${fullName}*! 
+
+✅ Selamat! Akun Anda telah disetujui oleh Manager.
+
+Anda sekarang dapat mulai mengirim laporan GMV LIVE session Anda.
+
+📸 *Cara Menggunakan:*
+1. Kirim screenshot hasil LIVE Anda
+2. Bot akan otomatis memproses GMV dan durasi
+3. Konfirmasi data dengan ketik *Y* atau *Ya*
+4. Laporan tersimpan dan menunggu verifikasi manager
+
+Selamat bekerja! 🚀
+        `;
+
+        await sendTelegramMessage(telegramUserId, message, { parse_mode: 'Markdown' });
+        console.log(`✅ Notification sent to ${fullName} (${telegramUserId})`);
+    } catch (error) {
+        console.error('❌ Send approval notification error:', error.message);
+    }
+};
+
+/**
+ * Send notification when HOST account is REJECTED
+ */
+const sendAccountRejectedNotification = async (telegramUserId, fullName) => {
+    try {
+        const message = `
+❌ *Pendaftaran Ditolak*
+
+Halo *${fullName}*,
+
+Maaf, pendaftaran Anda tidak dapat disetujui saat ini.
+
+Jika Anda merasa ini adalah kesalahan, silakan hubungi Manager untuk informasi lebih lanjut.
+
+Terima kasih.
+        `;
+
+        await sendTelegramMessage(telegramUserId, message, { parse_mode: 'Markdown' });
+        console.log(`✅ Rejection notification sent to ${fullName} (${telegramUserId})`);
+    } catch (error) {
+        console.error('❌ Send rejection notification error:', error.message);
+    }
+};
+
+/**
+ * Send notification when REPORT is VERIFIED
+ */
+const sendReportVerifiedNotification = async (telegramUserId, reportData) => {
+    try {
+        const formattedGMV = new Intl.NumberFormat('id-ID', {
+            style: 'currency',
+            currency: 'IDR',
+            minimumFractionDigits: 0
+        }).format(reportData.gmv);
+
+        const formattedDate = new Date(reportData.createdAt).toLocaleString('id-ID', {
+            day: '2-digit',
+            month: 'long',
+            year: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit'
+        });
+
+        const message = `
+✅ *Laporan Diverifikasi!*
+
+📊 *Report ID:* #${reportData.reportId}
+
+💰 *GMV:* ${formattedGMV}
+⏱️ *Durasi LIVE:* ${reportData.duration || 'Tidak terdeteksi'}
+📅 *Tanggal:* ${formattedDate}
+
+${reportData.notes ? `📝 *Catatan Manager:*\n${reportData.notes}\n\n` : ''}
+Status: *VERIFIED* ✅
+
+Selamat! Laporan Anda telah disetujui oleh Manager. 🎉
+
+Terus pertahankan performa Anda! 💪
+        `;
+
+        await sendTelegramMessage(telegramUserId, message, { parse_mode: 'Markdown' });
+        console.log(`✅ Verification notification sent for report #${reportData.reportId}`);
+    } catch (error) {
+        console.error('❌ Send verification notification error:', error.message);
+    }
+};
+
+/**
+ * Send notification when REPORT is REJECTED
+ */
+const sendReportRejectedNotification = async (telegramUserId, reportData) => {
+    try {
+        const formattedGMV = new Intl.NumberFormat('id-ID', {
+            style: 'currency',
+            currency: 'IDR',
+            minimumFractionDigits: 0
+        }).format(reportData.gmv);
+
+        const formattedDate = new Date(reportData.createdAt).toLocaleString('id-ID', {
+            day: '2-digit',
+            month: 'long',
+            year: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit'
+        });
+
+        const message = `
+❌ *Laporan Ditolak*
+
+📊 *Report ID:* #${reportData.reportId}
+
+💰 *GMV:* ${formattedGMV}
+⏱️ *Durasi LIVE:* ${reportData.duration || 'Tidak terdeteksi'}
+📅 *Tanggal:* ${formattedDate}
+
+${reportData.notes ? `📝 *Alasan Penolakan:*\n${reportData.notes}\n\n` : ''}
+Status: *REJECTED* ❌
+
+Silakan periksa kembali screenshot Anda dan kirim ulang laporan yang benar.
+
+Jika ada pertanyaan, hubungi Manager Anda.
+        `;
+
+        await sendTelegramMessage(telegramUserId, message, { parse_mode: 'Markdown' });
+        console.log(`✅ Rejection notification sent for report #${reportData.reportId}`);
+    } catch (error) {
+        console.error('❌ Send rejection notification error:', error.message);
+    }
+};
+
+// ============================================
+// HELPER FUNCTIONS
+// ============================================
+
 const downloadTelegramPhoto = async (fileId) => {
     try {
         const botToken = process.env.TELEGRAM_BOT_TOKEN;
@@ -487,9 +575,6 @@ const downloadTelegramPhoto = async (fileId) => {
     }
 };
 
-/**
- * Kirim pesan ke Telegram
- */
 const sendTelegramMessage = async (chatId, text, options = {}) => {
     try {
         const botToken = process.env.TELEGRAM_BOT_TOKEN;
@@ -508,9 +593,6 @@ const sendTelegramMessage = async (chatId, text, options = {}) => {
     }
 };
 
-/**
- * Setup Telegram Webhook
- */
 const setupWebhook = async (webhookUrl) => {
     try {
         const botToken = process.env.TELEGRAM_BOT_TOKEN;
@@ -534,9 +616,12 @@ const setupWebhook = async (webhookUrl) => {
     }
 };
 
-
 module.exports = {
     handleWebhook,
     setupWebhook,
-    sendTelegramMessage
+    sendTelegramMessage,
+    sendAccountApprovedNotification,     // ✅ NEW
+    sendAccountRejectedNotification,      // ✅ NEW
+    sendReportVerifiedNotification,       // ✅ NEW
+    sendReportRejectedNotification        // ✅ NEW
 };

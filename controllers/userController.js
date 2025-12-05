@@ -1,8 +1,11 @@
 const { query } = require('../config/db');
+const { 
+    sendAccountApprovedNotification, 
+    sendAccountRejectedNotification 
+} = require('./telegramController');
 
 /**
  * GET ALL PENDING USERS (Manager Only)
- * Mendapatkan daftar user yang belum di-approve
  */
 const getPendingUsers = async (req, res) => {
     try {
@@ -42,7 +45,7 @@ const getPendingUsers = async (req, res) => {
 
 /**
  * APPROVE USER (Manager Only)
- * Menyetujui user untuk bisa kirim laporan
+ * ✅ NOW SENDS TELEGRAM NOTIFICATION
  */
 const approveUser = async (req, res) => {
     try {
@@ -59,6 +62,8 @@ const approveUser = async (req, res) => {
             });
         }
 
+        const user = checkResult.rows[0];
+
         // Update is_approved menjadi true
         const updateQuery = `
             UPDATE users
@@ -69,6 +74,12 @@ const approveUser = async (req, res) => {
 
         const result = await query(updateQuery, [userId]);
 
+        // ✅ SEND TELEGRAM NOTIFICATION
+        await sendAccountApprovedNotification(
+            user.telegram_user_id, 
+            user.full_name
+        );
+
         res.status(200).json({
             success: true,
             message: 'User approved successfully',
@@ -76,6 +87,7 @@ const approveUser = async (req, res) => {
         });
 
         console.log(`✅ User ${result.rows[0].full_name} approved by Manager`);
+        console.log(`📲 Notification sent to Telegram user ${user.telegram_user_id}`);
 
     } catch (error) {
         console.error('❌ Approve user error:', error);
@@ -89,14 +101,14 @@ const approveUser = async (req, res) => {
 
 /**
  * REJECT/DELETE USER (Manager Only)
- * Menolak dan menghapus user
+ * ✅ NOW SENDS TELEGRAM NOTIFICATION
  */
 const rejectUser = async (req, res) => {
     try {
         const { userId } = req.params;
 
         // Cek apakah user ada
-        const checkQuery = 'SELECT id, full_name FROM users WHERE id = $1';
+        const checkQuery = 'SELECT id, telegram_user_id, full_name FROM users WHERE id = $1';
         const checkResult = await query(checkQuery, [userId]);
 
         if (checkResult.rows.length === 0) {
@@ -105,6 +117,14 @@ const rejectUser = async (req, res) => {
                 message: 'User not found'
             });
         }
+
+        const user = checkResult.rows[0];
+
+        // ✅ SEND TELEGRAM NOTIFICATION BEFORE DELETING
+        await sendAccountRejectedNotification(
+            user.telegram_user_id, 
+            user.full_name
+        );
 
         // Hapus user
         const deleteQuery = 'DELETE FROM users WHERE id = $1 RETURNING full_name';
@@ -117,6 +137,7 @@ const rejectUser = async (req, res) => {
         });
 
         console.log(`✅ User ${result.rows[0].full_name} rejected and deleted by Manager`);
+        console.log(`📲 Rejection notification sent to Telegram user ${user.telegram_user_id}`);
 
     } catch (error) {
         console.error('❌ Reject user error:', error);
