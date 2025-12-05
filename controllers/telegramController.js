@@ -1,3 +1,6 @@
+// FILE: controllers/telegramController.js
+// CHANGES: Add active status check before allowing photo upload
+
 const { query } = require('../config/db');
 const { extractTextFromImage } = require('../services/ocrService');
 const axios = require('axios');
@@ -34,6 +37,30 @@ const clearState = (userId) => {
 };
 
 // ============================================
+// ✅ NEW: CHECK USER STATUS HELPER
+// ============================================
+const checkUserStatus = async (telegramUserId) => {
+    const userResult = await query(
+        'SELECT id, full_name, is_approved, is_active FROM users WHERE telegram_user_id = $1',
+        [telegramUserId]
+    );
+
+    if (userResult.rows.length === 0) {
+        return { exists: false };
+    }
+
+    const user = userResult.rows[0];
+    
+    return {
+        exists: true,
+        id: user.id,
+        full_name: user.full_name,
+        is_approved: user.is_approved,
+        is_active: user.is_active
+    };
+};
+
+// ============================================
 // HELPER FUNCTIONS UNTUK ONBOARDING
 // ============================================
 
@@ -41,7 +68,7 @@ const handleStartCommand = async (chatId, telegramUserId, username) => {
     clearState(telegramUserId);
     
     const userResult = await query(
-        'SELECT id, full_name, role, is_approved FROM users WHERE telegram_user_id = $1',
+        'SELECT id, full_name, role, is_approved, is_active FROM users WHERE telegram_user_id = $1',
         [telegramUserId]
     );
 
@@ -77,6 +104,16 @@ const handleStartCommand = async (chatId, telegramUserId, username) => {
             `Anda akan mendapat notifikasi setelah akun Anda diaktifkan.`,
             { parse_mode: 'Markdown' }
         );
+    } else if (!userResult.rows[0].is_active) {
+        // ✅ NEW: Check if account is inactive
+        await sendTelegramMessage(
+            chatId,
+            `❌ *Akun Anda Telah Dinonaktifkan*\n\n` +
+            `Halo **${userResult.rows[0].full_name}**!\n\n` +
+            `Akun Anda saat ini dalam status tidak aktif.\n` +
+            `Silakan hubungi Manager untuk informasi lebih lanjut.`,
+            { parse_mode: 'Markdown' }
+        );
     } else {
         await sendTelegramMessage(
             chatId,
@@ -109,7 +146,7 @@ const handleFullNameInput = async (chatId, telegramUserId, username, fullName) =
 };
 
 // ============================================
-// PHOTO PROCESSING WITH CONFIRMATION
+// PHOTO PROCESSING WITH STATUS CHECK
 // ============================================
 
 const processPhotoReport = async (message, chatId, telegramUserId, username) => {
@@ -121,12 +158,10 @@ const processPhotoReport = async (message, chatId, telegramUserId, username) => 
         clearState(telegramUserId);
     }
     
-    const userResult = await query(
-        'SELECT id, full_name, is_approved FROM users WHERE telegram_user_id = $1',
-        [telegramUserId]
-    );
+    // ✅ NEW: Check user status before processing
+    const userStatus = await checkUserStatus(telegramUserId);
 
-    if (userResult.rows.length === 0 || userResult.rows[0].full_name === 'PENDING') {
+    if (!userStatus.exists || userStatus.full_name === 'PENDING') {
         await sendTelegramMessage(
             chatId,
             '❌ Akses Ditolak. Mohon ketik /start terlebih dahulu.'
@@ -134,19 +169,33 @@ const processPhotoReport = async (message, chatId, telegramUserId, username) => 
         return;
     }
 
-    if (!userResult.rows[0].is_approved) {
+    if (!userStatus.is_approved) {
         await sendTelegramMessage(
             chatId,
             '⏳ *Akun Anda Belum Disetujui*\n\n' +
             'Pendaftaran Anda sedang menunggu persetujuan dari Manager.\n' +
             'Anda akan mendapat notifikasi setelah akun Anda diaktifkan.\n\n' +
-            '👤 Nama: ' + userResult.rows[0].full_name,
+            '👤 Nama: ' + userStatus.full_name,
+            { parse_mode: 'Markdown' }
+        );
+        return;
+    }
+
+    // ✅ NEW: Check if account is active
+    if (!userStatus.is_active) {
+        await sendTelegramMessage(
+            chatId,
+            '❌ *Akun Anda Telah Dinonaktifkan*\n\n' +
+            'Akun Anda saat ini dalam status tidak aktif.\n' +
+            'Anda tidak dapat mengirim laporan.\n\n' +
+            '👤 Nama: ' + userStatus.full_name + '\n\n' +
+            'Silakan hubungi Manager untuk informasi lebih lanjut.',
             { parse_mode: 'Markdown' }
         );
         return;
     }
     
-    const userId = userResult.rows[0].id;
+    const userId = userStatus.id;
     const photo = message.photo[message.photo.length - 1];
     const fileId = photo.file_id;
 
@@ -392,12 +441,9 @@ const handleWebhook = async (req, res) => {
 };
 
 // ============================================
-// NOTIFICATION FUNCTIONS (NEW)
+// NOTIFICATION FUNCTIONS
 // ============================================
 
-/**
- * Send notification when HOST account is APPROVED
- */
 const sendAccountApprovedNotification = async (telegramUserId, fullName) => {
     try {
         const message = `
@@ -425,9 +471,6 @@ Selamat bekerja! 🚀
     }
 };
 
-/**
- * Send notification when HOST account is REJECTED
- */
 const sendAccountRejectedNotification = async (telegramUserId, fullName) => {
     try {
         const message = `
@@ -449,9 +492,6 @@ Terima kasih.
     }
 };
 
-/**
- * Send notification when REPORT is VERIFIED
- */
 const sendReportVerifiedNotification = async (telegramUserId, reportData) => {
     try {
         const formattedGMV = new Intl.NumberFormat('id-ID', {
@@ -492,9 +532,6 @@ Terus pertahankan performa Anda! 💪
     }
 };
 
-/**
- * Send notification when REPORT is REJECTED
- */
 const sendReportRejectedNotification = async (telegramUserId, reportData) => {
     try {
         const formattedGMV = new Intl.NumberFormat('id-ID', {
@@ -532,6 +569,52 @@ Jika ada pertanyaan, hubungi Manager Anda.
         console.log(`✅ Rejection notification sent for report #${reportData.reportId}`);
     } catch (error) {
         console.error('❌ Send rejection notification error:', error.message);
+    }
+};
+
+// ✅ NEW: Send notification when account is deactivated
+const sendAccountDeactivatedNotification = async (telegramUserId, fullName) => {
+    try {
+        const message = `
+❌ *Akun Anda Telah Dinonaktifkan*
+
+Halo *${fullName}*,
+
+Akun Anda telah dinonaktifkan oleh Manager.
+
+Anda tidak dapat lagi mengirim laporan hingga akun Anda diaktifkan kembali.
+
+Jika ada pertanyaan, silakan hubungi Manager Anda.
+
+Terima kasih.
+        `;
+
+        await sendTelegramMessage(telegramUserId, message, { parse_mode: 'Markdown' });
+        console.log(`✅ Deactivation notification sent to ${fullName} (${telegramUserId})`);
+    } catch (error) {
+        console.error('❌ Send deactivation notification error:', error.message);
+    }
+};
+
+// ✅ NEW: Send notification when account is reactivated
+const sendAccountReactivatedNotification = async (telegramUserId, fullName) => {
+    try {
+        const message = `
+✅ *Akun Anda Telah Diaktifkan Kembali!*
+
+Halo *${fullName}*,
+
+Kabar baik! Akun Anda telah diaktifkan kembali oleh Manager.
+
+Anda sekarang dapat mengirim laporan GMV LIVE session Anda lagi.
+
+Selamat bekerja! 🚀
+        `;
+
+        await sendTelegramMessage(telegramUserId, message, { parse_mode: 'Markdown' });
+        console.log(`✅ Reactivation notification sent to ${fullName} (${telegramUserId})`);
+    } catch (error) {
+        console.error('❌ Send reactivation notification error:', error.message);
     }
 };
 
@@ -620,8 +703,10 @@ module.exports = {
     handleWebhook,
     setupWebhook,
     sendTelegramMessage,
-    sendAccountApprovedNotification,     // ✅ NEW
-    sendAccountRejectedNotification,      // ✅ NEW
-    sendReportVerifiedNotification,       // ✅ NEW
-    sendReportRejectedNotification        // ✅ NEW
+    sendAccountApprovedNotification,
+    sendAccountRejectedNotification,
+    sendReportVerifiedNotification,
+    sendReportRejectedNotification,
+    sendAccountDeactivatedNotification,    // ✅ NEW
+    sendAccountReactivatedNotification     // ✅ NEW
 };
