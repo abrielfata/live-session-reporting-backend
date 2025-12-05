@@ -1,4 +1,9 @@
 const { query } = require('../config/db');
+// Tambahkan impor untuk fungsi notifikasi Telegram
+const {
+    sendReportVerifiedNotification,
+    sendReportRejectedNotification
+} = require('./telegramController');
 
 /**
  * GET ALL REPORTS (Manager Only)
@@ -6,14 +11,14 @@ const { query } = require('../config/db');
  */
 const getAllReports = async (req, res) => {
     try {
-        const { 
-            status, 
-            page = 1, 
-            limit = 10, 
-            sort = 'created_at', 
+        const {
+            status,
+            page = 1,
+            limit = 10,
+            sort = 'created_at',
             order = 'DESC',
-            month,  // NEW: Filter by month
-            year    // NEW: Filter by year
+            month, // NEW: Filter by month
+            year // NEW: Filter by year
         } = req.query;
 
         const pageNum = parseInt(page);
@@ -24,7 +29,7 @@ const getAllReports = async (req, res) => {
         let whereClause = '';
         const params = [];
         let paramIndex = 1;
-        
+
         if (status) {
             whereClause += `WHERE r.status = $${paramIndex}`;
             params.push(status);
@@ -49,7 +54,7 @@ const getAllReports = async (req, res) => {
 
         // Query reports
         const reportQuery = `
-            SELECT 
+            SELECT
                 r.id,
                 r.reported_gmv,
                 r.screenshot_url,
@@ -115,11 +120,11 @@ const getAllReports = async (req, res) => {
 const getMyReports = async (req, res) => {
     try {
         const userId = req.user.id;
-        const { 
-            status, 
-            page = 1, 
-            limit = 10, 
-            sort = 'created_at', 
+        const {
+            status,
+            page = 1,
+            limit = 10,
+            sort = 'created_at',
             order = 'DESC',
             month,
             year
@@ -132,7 +137,7 @@ const getMyReports = async (req, res) => {
         let whereClause = 'WHERE r.host_id = $1';
         const params = [userId];
         let paramIndex = 2;
-        
+
         if (status) {
             whereClause += ` AND r.status = $${paramIndex}`;
             params.push(status);
@@ -152,7 +157,7 @@ const getMyReports = async (req, res) => {
         }
 
         const reportQuery = `
-            SELECT 
+            SELECT
                 r.id,
                 r.reported_gmv,
                 r.screenshot_url,
@@ -205,6 +210,110 @@ const getMyReports = async (req, res) => {
     }
 };
 
+// ============================================
+// MODIFIED updateReportStatus FUNCTION
+// ============================================
+
+/**
+ * UPDATE REPORT STATUS (Manager Only)
+ * ✅ NOW SENDS TELEGRAM NOTIFICATION
+ */
+const updateReportStatus = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { status, notes } = req.body;
+
+        // Validasi status
+        const validStatuses = ['VERIFIED', 'REJECTED', 'PENDING'];
+        if (!status || !validStatuses.includes(status)) {
+            return res.status(400).json({
+                success: false,
+                message: 'Invalid status. Must be VERIFIED, REJECTED, or PENDING'
+            });
+        }
+
+        // Cek apakah laporan ada DAN ambil data host (untuk notifikasi)
+        const checkQuery = `
+            SELECT
+                r.id,
+                r.reported_gmv,
+                r.live_duration,
+                r.created_at,
+                u.telegram_user_id,
+                u.full_name as host_name
+            FROM reports r
+            JOIN users u ON r.host_id = u.id
+            WHERE r.id = $1
+        `;
+        const checkResult = await query(checkQuery, [id]);
+
+        if (checkResult.rows.length === 0) {
+            return res.status(404).json({
+                success: false,
+                message: 'Report not found'
+            });
+        }
+
+        const reportData = checkResult.rows[0];
+
+        // Update status
+        const updateQuery = `
+            UPDATE reports
+            SET status = $1, notes = $2, updated_at = CURRENT_TIMESTAMP
+            WHERE id = $3
+            RETURNING id, status, notes, updated_at
+        `;
+
+        const result = await query(updateQuery, [status, notes || null, id]);
+
+        // ✅ SEND TELEGRAM NOTIFICATION
+        if (status === 'VERIFIED') {
+            await sendReportVerifiedNotification(
+                reportData.telegram_user_id,
+                {
+                    reportId: reportData.id,
+                    gmv: reportData.reported_gmv,
+                    duration: reportData.live_duration,
+                    createdAt: reportData.created_at,
+                    notes: notes || null
+                }
+            );
+        } else if (status === 'REJECTED') {
+            await sendReportRejectedNotification(
+                reportData.telegram_user_id,
+                {
+                    reportId: reportData.id,
+                    gmv: reportData.reported_gmv,
+                    duration: reportData.live_duration,
+                    createdAt: reportData.created_at,
+                    notes: notes || null
+                }
+            );
+        }
+
+        res.status(200).json({
+            success: true,
+            message: `Report ${status.toLowerCase()} successfully`,
+            data: result.rows[0]
+        });
+
+        console.log(`✅ Report ${id} status updated to ${status} by Manager`);
+        console.log(`📲 Notification sent to host ${reportData.host_name} (${reportData.telegram_user_id})`);
+
+    } catch (error) {
+        console.error('❌ Update report status error:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Internal server error',
+            error: error.message
+        });
+    }
+};
+
+// ============================================
+// END OF MODIFIED FUNCTION
+// ============================================
+
 /**
  * GET REPORT STATISTICS (Manager Only)
  * With optional month/year filter
@@ -231,7 +340,7 @@ const getReportStatistics = async (req, res) => {
         }
 
         const statsQuery = `
-            SELECT 
+            SELECT
                 COUNT(*) as total_reports,
                 COUNT(CASE WHEN status = 'PENDING' THEN 1 END) as pending_reports,
                 COUNT(CASE WHEN status = 'VERIFIED' THEN 1 END) as verified_reports,
@@ -314,7 +423,7 @@ const getMonthlyHostStatistics = async (req, res) => {
 const getAvailableMonths = async (req, res) => {
     try {
         const monthsQuery = `
-            SELECT DISTINCT 
+            SELECT DISTINCT
                 year,
                 month,
                 TO_CHAR(TO_DATE(year || '-' || month || '-01', 'YYYY-MM-DD'), 'Month YYYY') as display_name,
@@ -349,7 +458,7 @@ const getReportById = async (req, res) => {
         const userRole = req.user.role;
 
         const reportQuery = `
-            SELECT 
+            SELECT
                 r.id,
                 r.reported_gmv,
                 r.screenshot_url,
@@ -403,60 +512,12 @@ const getReportById = async (req, res) => {
     }
 };
 
-const updateReportStatus = async (req, res) => {
-    try {
-        const { id } = req.params;
-        const { status, notes } = req.body;
-
-        const validStatuses = ['VERIFIED', 'REJECTED', 'PENDING'];
-        if (!status || !validStatuses.includes(status)) {
-            return res.status(400).json({
-                success: false,
-                message: 'Invalid status'
-            });
-        }
-
-        const checkQuery = 'SELECT id FROM reports WHERE id = $1';
-        const checkResult = await query(checkQuery, [id]);
-
-        if (checkResult.rows.length === 0) {
-            return res.status(404).json({
-                success: false,
-                message: 'Report not found'
-            });
-        }
-
-        const updateQuery = `
-            UPDATE reports
-            SET status = $1, notes = $2, updated_at = CURRENT_TIMESTAMP
-            WHERE id = $3
-            RETURNING id, status, notes, updated_at
-        `;
-
-        const result = await query(updateQuery, [status, notes || null, id]);
-
-        res.status(200).json({
-            success: true,
-            message: `Report ${status.toLowerCase()} successfully`,
-            data: result.rows[0]
-        });
-
-    } catch (error) {
-        console.error('❌ Update report status error:', error);
-        res.status(500).json({
-            success: false,
-            message: 'Internal server error',
-            error: error.message
-        });
-    }
-};
-
 module.exports = {
     getAllReports,
     getReportById,
     getMyReports,
-    updateReportStatus,
+    updateReportStatus, // ✅ Updated function is exported
     getReportStatistics,
-    getMonthlyHostStatistics,    // NEW
-    getAvailableMonths            // NEW
+    getMonthlyHostStatistics,
+    getAvailableMonths
 };
