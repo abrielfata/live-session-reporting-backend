@@ -1,5 +1,5 @@
 // FILE: controllers/telegramController.js
-// CHANGES: Add active status check before allowing photo upload
+// CHANGES: Add user ID notification during registration
 
 const { query } = require('../config/db');
 const { extractTextFromImage } = require('../services/ocrService');
@@ -37,7 +37,7 @@ const clearState = (userId) => {
 };
 
 // ============================================
-// ✅ NEW: CHECK USER STATUS HELPER
+// CHECK USER STATUS HELPER
 // ============================================
 const checkUserStatus = async (telegramUserId) => {
     const userResult = await query(
@@ -105,7 +105,6 @@ const handleStartCommand = async (chatId, telegramUserId, username) => {
             { parse_mode: 'Markdown' }
         );
     } else if (!userResult.rows[0].is_active) {
-        // ✅ NEW: Check if account is inactive
         await sendTelegramMessage(
             chatId,
             `❌ *Akun Anda Telah Dinonaktifkan*\n\n` +
@@ -124,6 +123,7 @@ const handleStartCommand = async (chatId, telegramUserId, username) => {
     }
 };
 
+// ✅ MODIFIED: Send User ID after registration
 const handleFullNameInput = async (chatId, telegramUserId, username, fullName) => {
     await query(
         `UPDATE users 
@@ -134,15 +134,25 @@ const handleFullNameInput = async (chatId, telegramUserId, username, fullName) =
     
     clearState(telegramUserId);
     
+    // ✅ SEND USER ID NOTIFICATION
     await sendTelegramMessage(
         chatId,
+        `✅ *Pendaftaran Selesai!*\n\n` +
         `Terima kasih, **${fullName}**!\n\n` +
-        `✅ Pendaftaran Anda selesai.\n` +
-        `⏳ Menunggu persetujuan Manager.\n\n` +
-        `Anda akan mendapat notifikasi setelah akun diaktifkan.`,
+        `📋 *Informasi Login Anda:*\n` +
+        `• Nama: ${fullName}\n` +
+        `• User ID: \`${telegramUserId}\`\n\n` +
+        `⏳ *Status:* Menunggu persetujuan Manager\n\n` +
+        `💡 *Cara Login ke Dashboard:*\n` +
+        `1. Buka website dashboard\n` +
+        `2. Masukkan User ID Anda: \`${telegramUserId}\`\n` +
+        `3. Klik Login\n\n` +
+        `Anda akan mendapat notifikasi setelah akun diaktifkan oleh Manager.\n\n` +
+        `_Simpan User ID Anda untuk login!_ 🔐`,
         { parse_mode: 'Markdown' }
     );
-    console.log('✅ User registration completed for:', fullName);
+    
+    console.log('✅ User registration completed for:', fullName, 'User ID:', telegramUserId);
 };
 
 // ============================================
@@ -158,7 +168,6 @@ const processPhotoReport = async (message, chatId, telegramUserId, username) => 
         clearState(telegramUserId);
     }
     
-    // ✅ NEW: Check user status before processing
     const userStatus = await checkUserStatus(telegramUserId);
 
     if (!userStatus.exists || userStatus.full_name === 'PENDING') {
@@ -181,7 +190,6 @@ const processPhotoReport = async (message, chatId, telegramUserId, username) => 
         return;
     }
 
-    // ✅ NEW: Check if account is active
     if (!userStatus.is_active) {
         await sendTelegramMessage(
             chatId,
@@ -444,6 +452,7 @@ const handleWebhook = async (req, res) => {
 // NOTIFICATION FUNCTIONS
 // ============================================
 
+// ✅ MODIFIED: Include User ID in approval notification
 const sendAccountApprovedNotification = async (telegramUserId, fullName) => {
     try {
         const message = `
@@ -453,9 +462,16 @@ Halo *${fullName}*!
 
 ✅ Selamat! Akun Anda telah disetujui oleh Manager.
 
-Anda sekarang dapat mulai mengirim laporan GMV LIVE session Anda.
+📋 *Informasi Login Dashboard:*
+• User ID: \`${telegramUserId}\`
+• Status: Aktif ✅
 
-📸 *Cara Menggunakan:*
+💻 *Cara Login ke Dashboard:*
+1. Buka website dashboard
+2. Masukkan User ID: \`${telegramUserId}\`
+3. Klik Login
+
+📸 *Cara Menggunakan Bot:*
 1. Kirim screenshot hasil LIVE Anda
 2. Bot akan otomatis memproses GMV dan durasi
 3. Konfirmasi data dengan ketik *Y* atau *Ya*
@@ -572,7 +588,6 @@ Jika ada pertanyaan, hubungi Manager Anda.
     }
 };
 
-// ✅ NEW: Send notification when account is deactivated
 const sendAccountDeactivatedNotification = async (telegramUserId, fullName) => {
     try {
         const message = `
@@ -596,7 +611,6 @@ Terima kasih.
     }
 };
 
-// ✅ NEW: Send notification when account is reactivated
 const sendAccountReactivatedNotification = async (telegramUserId, fullName) => {
     try {
         const message = `
@@ -605,6 +619,10 @@ const sendAccountReactivatedNotification = async (telegramUserId, fullName) => {
 Halo *${fullName}*,
 
 Kabar baik! Akun Anda telah diaktifkan kembali oleh Manager.
+
+📋 *Informasi Login Dashboard:*
+• User ID: \`${telegramUserId}\`
+• Status: Aktif ✅
 
 Anda sekarang dapat mengirim laporan GMV LIVE session Anda lagi.
 
@@ -707,6 +725,6 @@ module.exports = {
     sendAccountRejectedNotification,
     sendReportVerifiedNotification,
     sendReportRejectedNotification,
-    sendAccountDeactivatedNotification,    // ✅ NEW
-    sendAccountReactivatedNotification     // ✅ NEW
+    sendAccountDeactivatedNotification,
+    sendAccountReactivatedNotification
 };
