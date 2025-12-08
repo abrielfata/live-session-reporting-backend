@@ -10,13 +10,20 @@ const rl = readline.createInterface({
 async function setupManager() {
     console.log('🔧 ========== SETUP MANAGER ACCOUNT ==========\n');
     
-    // Prompt untuk data manager
-    rl.question('Telegram User ID Manager (e.g., 123456789): ', (telegram_user_id) => {
+    rl.question('Email Address (e.g., manager@example.com): ', (email) => {
+        // Validasi format email
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        if (!emailRegex.test(email)) {
+            console.error('\n❌ Invalid email format!');
+            rl.close();
+            process.exit(1);
+        }
+
         rl.question('Full Name (e.g., Manager Utama): ', (full_name) => {
             rl.question('Username (e.g., manager_admin): ', (username) => {
                 rl.question('Password (min 6 characters): ', async (password) => {
                     
-                    // Validasi
+                    // Validasi password
                     if (password.length < 6) {
                         console.error('\n❌ Password must be at least 6 characters!');
                         rl.close();
@@ -28,9 +35,9 @@ async function setupManager() {
                         console.log('\n🔐 Hashing password...');
                         const password_hash = await bcrypt.hash(password, 10);
                         
-                        // Check if manager exists
-                        const checkQuery = 'SELECT id FROM users WHERE telegram_user_id = $1';
-                        const existing = await query(checkQuery, [telegram_user_id]);
+                        // Check if manager exists by email
+                        const checkQuery = 'SELECT id FROM users WHERE LOWER(email) = LOWER($1)';
+                        const existing = await query(checkQuery, [email]);
                         
                         if (existing.rows.length > 0) {
                             // Update existing
@@ -45,15 +52,15 @@ async function setupManager() {
                                     is_active = true,
                                     is_approved = true,
                                     updated_at = CURRENT_TIMESTAMP
-                                WHERE telegram_user_id = $4
-                                RETURNING id, telegram_user_id, username, full_name, role
+                                WHERE LOWER(email) = LOWER($4)
+                                RETURNING id, email, username, full_name, role
                             `;
                             
                             const result = await query(updateQuery, [
                                 username,
                                 full_name,
                                 password_hash,
-                                telegram_user_id
+                                email
                             ]);
                             
                             console.log('\n✅ Manager updated successfully!');
@@ -63,21 +70,27 @@ async function setupManager() {
                         } else {
                             // Insert new
                             console.log('📝 Creating new manager...');
+                            
+                            // Generate telegram_user_id (for compatibility)
+                            const telegram_user_id = 'MGR' + Date.now();
+                            
                             const insertQuery = `
                                 INSERT INTO users (
                                     telegram_user_id,
+                                    email,
                                     username,
                                     full_name,
                                     role,
                                     password_hash,
                                     is_active,
                                     is_approved
-                                ) VALUES ($1, $2, $3, 'MANAGER', $4, true, true)
-                                RETURNING id, telegram_user_id, username, full_name, role
+                                ) VALUES ($1, $2, $3, $4, 'MANAGER', $5, true, true)
+                                RETURNING id, email, username, full_name, role
                             `;
                             
                             const result = await query(insertQuery, [
                                 telegram_user_id,
+                                email,
                                 username,
                                 full_name,
                                 password_hash
@@ -89,9 +102,10 @@ async function setupManager() {
                         }
                         
                         console.log('\n🔐 Login Credentials:');
-                        console.log('   User ID:', telegram_user_id);
+                        console.log('   Email:', email);
                         console.log('   Password:', password);
                         console.log('\n💡 You can now login to the dashboard!');
+                        console.log('   URL: http://localhost:3000/login');
                         
                     } catch (error) {
                         console.error('\n❌ Error:', error.message);
