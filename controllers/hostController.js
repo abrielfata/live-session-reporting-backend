@@ -1,4 +1,5 @@
 const { query } = require('../config/db');
+const bcrypt = require('bcryptjs'); // ✅ NEW: For password hashing
 // Tambahkan impor untuk fungsi notifikasi Telegram
 const {
     sendAccountDeactivatedNotification,
@@ -35,6 +36,7 @@ const getAllHosts = async (req, res) => {
                 telegram_user_id,
                 username,
                 full_name,
+                email,
                 role,
                 is_active,
                 is_approved,
@@ -98,6 +100,7 @@ const getHostById = async (req, res) => {
                 telegram_user_id,
                 username,
                 full_name,
+                email,
                 role,
                 is_active,
                 is_approved,
@@ -137,7 +140,7 @@ const getHostById = async (req, res) => {
  */
 const createHost = async (req, res) => {
     try {
-        const { telegram_user_id, username, full_name, is_approved = true } = req.body;
+        const { telegram_user_id, username, full_name, email, password, is_approved = true } = req.body;
 
         // Validasi input
         if (!telegram_user_id || !full_name) {
@@ -158,17 +161,45 @@ const createHost = async (req, res) => {
             });
         }
 
+        // ✅ NEW: Check if email already exists (if provided)
+        if (email) {
+            const emailCheck = await query(
+                'SELECT id FROM users WHERE LOWER(email) = LOWER($1)',
+                [email]
+            );
+            if (emailCheck.rows.length > 0) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Email already exists'
+                });
+            }
+        }
+
+        // ✅ NEW: Hash password if provided
+        let passwordHash = null;
+        if (password) {
+            if (password.length < 6) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Password must be at least 6 characters'
+                });
+            }
+            passwordHash = await bcrypt.hash(password, 10);
+        }
+
         // Insert host baru
         const insertQuery = `
-            INSERT INTO users (telegram_user_id, username, full_name, role, is_approved, is_active)
-            VALUES ($1, $2, $3, 'HOST', $4, true)
-            RETURNING id, telegram_user_id, username, full_name, role, is_approved, is_active, created_at
+            INSERT INTO users (telegram_user_id, username, full_name, email, password_hash, role, is_approved, is_active)
+            VALUES ($1, $2, $3, $4, $5, 'HOST', $6, true)
+            RETURNING id, telegram_user_id, username, full_name, email, role, is_approved, is_active, created_at
         `;
 
         const result = await query(insertQuery, [
             telegram_user_id,
             username || `host_${telegram_user_id}`,
             full_name,
+            email || null,
+            passwordHash,
             is_approved
         ]);
 
@@ -192,15 +223,15 @@ const createHost = async (req, res) => {
 
 /**
  * UPDATE HOST (Manager Only)
- * Update data host
+ * ✅ UPDATED: Now supports Email & Password editing
  */
 const updateHost = async (req, res) => {
     try {
         const { id } = req.params;
-        const { telegram_user_id, username, full_name, is_active, is_approved } = req.body;
+        const { telegram_user_id, username, full_name, email, password, is_active, is_approved } = req.body;
 
         // Cek apakah host ada
-        const checkQuery = "SELECT id FROM users WHERE id = $1 AND role = 'HOST'";
+        const checkQuery = "SELECT id, telegram_user_id, email FROM users WHERE id = $1 AND role = 'HOST'";
         const checkResult = await query(checkQuery, [id]);
 
         if (checkResult.rows.length === 0) {
@@ -208,6 +239,22 @@ const updateHost = async (req, res) => {
                 success: false,
                 message: 'Host not found'
             });
+        }
+
+        const existingHost = checkResult.rows[0];
+
+        // ✅ NEW: Check if email is being changed and if it's already taken
+        if (email && email.toLowerCase() !== existingHost.email?.toLowerCase()) {
+            const emailCheck = await query(
+                'SELECT id FROM users WHERE LOWER(email) = LOWER($1) AND id != $2',
+                [email, id]
+            );
+            if (emailCheck.rows.length > 0) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Email already exists'
+                });
+            }
         }
 
         // Build update query dynamically
@@ -228,6 +275,25 @@ const updateHost = async (req, res) => {
         if (full_name !== undefined) {
             updates.push(`full_name = $${paramIndex}`);
             params.push(full_name);
+            paramIndex++;
+        }
+        // ✅ NEW: Email update
+        if (email !== undefined) {
+            updates.push(`email = $${paramIndex}`);
+            params.push(email || null);
+            paramIndex++;
+        }
+        // ✅ NEW: Password update (only if provided)
+        if (password !== undefined && password.trim() !== '') {
+            if (password.length < 6) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Password must be at least 6 characters'
+                });
+            }
+            const passwordHash = await bcrypt.hash(password, 10);
+            updates.push(`password_hash = $${paramIndex}`);
+            params.push(passwordHash);
             paramIndex++;
         }
         if (is_active !== undefined) {
@@ -255,7 +321,7 @@ const updateHost = async (req, res) => {
             UPDATE users
             SET ${updates.join(', ')}
             WHERE id = $${paramIndex}
-            RETURNING id, telegram_user_id, username, full_name, is_active, is_approved, updated_at
+            RETURNING id, telegram_user_id, username, full_name, email, is_active, is_approved, updated_at
         `;
 
         const result = await query(updateQuery, params);
@@ -267,6 +333,12 @@ const updateHost = async (req, res) => {
         });
 
         console.log(`✅ Host ${id} updated by Manager`);
+        if (password) {
+            console.log(`🔐 Password updated for host ${id}`);
+        }
+        if (email) {
+            console.log(`📧 Email updated for host ${id}: ${email}`);
+        }
 
     } catch (error) {
         console.error('❌ Update host error:', error);
@@ -332,7 +404,7 @@ const toggleHostStatus = async (req, res) => {
 
         // Get current status and telegram_user_id
         const checkQuery = `
-            SELECT id, full_name, is_active, telegram_user_id
+            SELECT id, full_name, email, is_active, telegram_user_id
             FROM users
             WHERE id = $1 AND role = 'HOST'
         `;
@@ -364,7 +436,8 @@ const toggleHostStatus = async (req, res) => {
             // Account reactivated
             await sendAccountReactivatedNotification(
                 host.telegram_user_id,
-                host.full_name
+                host.full_name,
+                host.email // ✅ Pass email for notification
             );
         } else {
             // Account deactivated
