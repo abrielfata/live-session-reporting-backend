@@ -1,11 +1,11 @@
 // FILE: controllers/telegramController.js
-// CHANGES: Add user ID notification during registration
 
 const { query } = require('../config/db');
 const { extractTextFromImage } = require('../services/ocrService');
 const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
+const bcrypt = require('bcryptjs'); // ✅ TAMBAHKAN LIBRARY INI
 
 // ============================================
 // STATE MANAGEMENT
@@ -23,7 +23,7 @@ const setState = (userId, state, data = {}) => {
 
 const getState = (userId) => {
     const userState = userStates.get(userId);
-    if (userState && Date.now() - userState.timestamp > 600000) {
+    if (userState && Date.now() - userState.timestamp > 600000) { // 10 menit expire
         console.log(`⏰ State expired for user ${userId}`);
         userStates.delete(userId);
         return null;
@@ -37,7 +37,7 @@ const clearState = (userId) => {
 };
 
 // ============================================
-// CHECK USER STATUS HELPER
+// CHECK USER STATUS HELPER (Untuk Photo Process)
 // ============================================
 const checkUserStatus = async (telegramUserId) => {
     const userResult = await query(
@@ -61,18 +61,19 @@ const checkUserStatus = async (telegramUserId) => {
 };
 
 // ============================================
-// HELPER FUNCTIONS UNTUK ONBOARDING
+// ✅ HANDLE START COMMAND - DENGAN PASSWORD SETUP
 // ============================================
 
 const handleStartCommand = async (chatId, telegramUserId, username) => {
     clearState(telegramUserId);
     
     const userResult = await query(
-        'SELECT id, full_name, role, is_approved, is_active FROM users WHERE telegram_user_id = $1',
+        'SELECT id, full_name, role, is_approved, is_active, password_hash FROM users WHERE telegram_user_id = $1',
         [telegramUserId]
     );
 
     if (userResult.rows.length === 0) {
+        // ✅ NEW USER - Create with PENDING status
         await query(
             `INSERT INTO users (telegram_user_id, username, full_name, role)
              VALUES ($1, $2, 'PENDING', 'HOST')`,
@@ -83,48 +84,90 @@ const handleStartCommand = async (chatId, telegramUserId, username) => {
         
         await sendTelegramMessage(
             chatId,
-            `👋 Halo! Selamat datang di Live Session Reporting Bot.\n\n` +
-            `Sebelum melanjutkan, **siapa nama lengkap Anda?**\n\n` +
+            `👋 *Selamat datang di Live Session Reporting Bot!*\n\n` +
+            `Untuk melanjutkan registrasi, silakan:\n\n` +
+            `1️⃣ Masukkan *nama lengkap* Anda\n` +
             `Contoh: Budi Santoso`,
             { parse_mode: 'Markdown' }
         );
         console.log('✅ New user started registration:', telegramUserId);
+        
     } else if (userResult.rows[0].full_name === 'PENDING') {
+        // User sudah mulai registrasi tapi belum selesai
         setState(telegramUserId, 'WAITING_FULL_NAME');
         await sendTelegramMessage(
             chatId,
-            `Mohon masukkan nama lengkap Anda untuk menyelesaikan pendaftaran.`
+            `Silakan masukkan *nama lengkap* Anda untuk melanjutkan registrasi.`,
+            { parse_mode: 'Markdown' }
         );
+        
+    } else if (!userResult.rows[0].password_hash) {
+        // ✅ User sudah punya nama tapi belum set password
+        setState(telegramUserId, 'WAITING_PASSWORD', { full_name: userResult.rows[0].full_name });
+        await sendTelegramMessage(
+            chatId,
+            `🔐 *Setup Password*\n\n` +
+            `Halo *${userResult.rows[0].full_name}*!\n\n` +
+            `Silakan buat password untuk login ke dashboard:\n\n` +
+            `⚠️ Password minimal 6 karakter\n` +
+            `💡 Gunakan kombinasi huruf dan angka untuk keamanan`,
+            { parse_mode: 'Markdown' }
+        );
+        
     } else if (!userResult.rows[0].is_approved) {
+        // User sudah lengkap tapi belum approved
         await sendTelegramMessage(
             chatId,
             `⏳ *Akun Anda Belum Disetujui*\n\n` +
-            `Halo **${userResult.rows[0].full_name}**!\n\n` +
+            `Halo *${userResult.rows[0].full_name}*!\n\n` +
+            `📋 *Informasi Login Anda:*\n` +
+            `• User ID: \`${telegramUserId}\`\n` +
+            `• Password: ✅ Sudah diset\n\n` +
             `Pendaftaran Anda sedang menunggu persetujuan dari Manager.\n` +
             `Anda akan mendapat notifikasi setelah akun Anda diaktifkan.`,
             { parse_mode: 'Markdown' }
         );
+        
     } else if (!userResult.rows[0].is_active) {
+        // User di-deactivate
         await sendTelegramMessage(
             chatId,
             `❌ *Akun Anda Telah Dinonaktifkan*\n\n` +
-            `Halo **${userResult.rows[0].full_name}**!\n\n` +
+            `Halo *${userResult.rows[0].full_name}*!\n\n` +
             `Akun Anda saat ini dalam status tidak aktif.\n` +
             `Silakan hubungi Manager untuk informasi lebih lanjut.`,
             { parse_mode: 'Markdown' }
         );
+        
     } else {
+        // User sudah approved dan aktif
         await sendTelegramMessage(
             chatId,
-            `Selamat datang kembali, **${userResult.rows[0].full_name}** (${userResult.rows[0].role})!\n\n` +
-            `Silakan kirimkan screenshot laporan GMV Anda.`,
+            `✅ *Selamat datang kembali, ${userResult.rows[0].full_name}!*\n\n` +
+            `📋 *Informasi Login Anda:*\n` +
+            `• User ID: \`${telegramUserId}\`\n` +
+            `• Password: ✅ Sudah diset\n\n` +
+            `📸 *Cara Menggunakan Bot:*\n` +
+            `Kirimkan screenshot hasil LIVE Anda, dan bot akan otomatis memproses GMV dan durasi.`,
             { parse_mode: 'Markdown' }
         );
     }
 };
 
-// ✅ MODIFIED: Send User ID after registration
+// ============================================
+// ✅ HANDLE FULL NAME INPUT
+// ============================================
+
 const handleFullNameInput = async (chatId, telegramUserId, username, fullName) => {
+    // Validasi nama
+    if (fullName.length < 3) {
+        await sendTelegramMessage(
+            chatId,
+            '❌ Nama terlalu pendek. Minimal 3 karakter.\n\nSilakan masukkan nama lengkap yang valid:'
+        );
+        return;
+    }
+    
     await query(
         `UPDATE users 
          SET full_name = $1, username = $2, updated_at = CURRENT_TIMESTAMP
@@ -132,27 +175,92 @@ const handleFullNameInput = async (chatId, telegramUserId, username, fullName) =
         [fullName, username || `user_${telegramUserId}`, telegramUserId]
     );
     
-    clearState(telegramUserId);
+    // ✅ LANJUT KE PASSWORD SETUP
+    setState(telegramUserId, 'WAITING_PASSWORD', { full_name: fullName });
     
-    // ✅ SEND USER ID NOTIFICATION
     await sendTelegramMessage(
         chatId,
-        `✅ *Pendaftaran Selesai!*\n\n` +
-        `Terima kasih, **${fullName}**!\n\n` +
-        `📋 *Informasi Login Anda:*\n` +
-        `• Nama: ${fullName}\n` +
-        `• User ID: \`${telegramUserId}\`\n\n` +
-        `⏳ *Status:* Menunggu persetujuan Manager\n\n` +
-        `💡 *Cara Login ke Dashboard:*\n` +
-        `1. Buka website dashboard\n` +
-        `2. Masukkan User ID Anda: \`${telegramUserId}\`\n` +
-        `3. Klik Login\n\n` +
-        `Anda akan mendapat notifikasi setelah akun diaktifkan oleh Manager.\n\n` +
-        `_Simpan User ID Anda untuk login!_ 🔐`,
+        `✅ Nama berhasil disimpan!\n\n` +
+        `🔐 *Setup Password*\n\n` +
+        `Sekarang, buat password untuk login ke dashboard:\n\n` +
+        `⚠️ Password minimal 6 karakter\n` +
+        `💡 Gunakan kombinasi huruf dan angka untuk keamanan\n\n` +
+        `Ketik password Anda sekarang:`,
         { parse_mode: 'Markdown' }
     );
     
-    console.log('✅ User registration completed for:', fullName, 'User ID:', telegramUserId);
+    console.log('✅ Full name saved for:', fullName);
+};
+
+// ============================================
+// ✅ NEW: HANDLE PASSWORD INPUT
+// ============================================
+
+const handlePasswordInput = async (chatId, telegramUserId, password) => {
+    const currentState = getState(telegramUserId);
+    
+    if (!currentState || currentState.state !== 'WAITING_PASSWORD') {
+        return false;
+    }
+    
+    // Validasi password
+    if (password.length < 6) {
+        await sendTelegramMessage(
+            chatId,
+            '❌ *Password terlalu pendek!*\n\n' +
+            'Password minimal 6 karakter.\n\n' +
+            'Silakan masukkan password yang lebih kuat:',
+            { parse_mode: 'Markdown' }
+        );
+        return true;
+    }
+    
+    if (password.length > 50) {
+        await sendTelegramMessage(
+            chatId,
+            '❌ Password terlalu panjang (maksimal 50 karakter).\n\n' +
+            'Silakan masukkan password yang lebih pendek:',
+            { parse_mode: 'Markdown' }
+        );
+        return true;
+    }
+    
+    // Hash password
+    const passwordHash = await bcrypt.hash(password, 10);
+    
+    // Save to database
+    await query(
+        `UPDATE users 
+         SET password_hash = $1, updated_at = CURRENT_TIMESTAMP
+         WHERE telegram_user_id = $2`,
+        [passwordHash, telegramUserId]
+    );
+    
+    clearState(telegramUserId);
+    
+    const fullName = currentState.data.full_name;
+    
+    // ✅ SEND SUCCESS MESSAGE WITH LOGIN INFO
+    await sendTelegramMessage(
+        chatId,
+        `✅ *Registrasi Selesai!*\n\n` +
+        `Terima kasih, *${fullName}*!\n\n` +
+        `📋 *Informasi Login Dashboard:*\n` +
+        `• User ID: \`${telegramUserId}\`\n` +
+        `• Password: ✅ Sudah diset\n\n` +
+        `⏳ *Status:* Menunggu persetujuan Manager\n\n` +
+        `💡 *Cara Login ke Dashboard:*\n` +
+        `1. Buka website dashboard\n` +
+        `2. Masukkan User ID: \`${telegramUserId}\`\n` +
+        `3. Masukkan Password yang Anda buat\n` +
+        `4. Klik Login\n\n` +
+        `Anda akan mendapat notifikasi setelah akun diaktifkan oleh Manager.\n\n` +
+        `_Simpan User ID dan Password Anda dengan aman!_ 🔐`,
+        { parse_mode: 'Markdown' }
+    );
+    
+    console.log('✅ Password set for user:', fullName, 'User ID:', telegramUserId);
+    return true;
 };
 
 // ============================================
@@ -367,20 +475,34 @@ const handleConfirmation = async (chatId, telegramUserId, textInput) => {
     return true;
 };
 
+// ============================================
+// ✅ UPDATE: HANDLE TEXT INPUT
+// ============================================
+
 const handleTextInput = async (chatId, telegramUserId, username, textInput) => {
     console.log('💬 Text input received:', textInput);
     
+    // Check if waiting for confirmation
     const confirmed = await handleConfirmation(chatId, telegramUserId, textInput);
     if (confirmed) {
         return;
     }
 
     const currentState = getState(telegramUserId);
+    
+    // ✅ Check if waiting for password
+    if (currentState && currentState.state === 'WAITING_PASSWORD') {
+        await handlePasswordInput(chatId, telegramUserId, textInput);
+        return;
+    }
+    
+    // Check if waiting for full name
     if (currentState && currentState.state === 'WAITING_FULL_NAME') {
         await handleFullNameInput(chatId, telegramUserId, username, textInput);
         return;
     }
 
+    // Default response
     await sendTelegramMessage(
         chatId,
         'Mohon kirimkan *screenshot laporan GMV* atau ketik /start untuk memulai.',
@@ -452,7 +574,6 @@ const handleWebhook = async (req, res) => {
 // NOTIFICATION FUNCTIONS
 // ============================================
 
-// ✅ MODIFIED: Include User ID in approval notification
 const sendAccountApprovedNotification = async (telegramUserId, fullName) => {
     try {
         const message = `
@@ -464,12 +585,14 @@ Halo *${fullName}*!
 
 📋 *Informasi Login Dashboard:*
 • User ID: \`${telegramUserId}\`
+• Password: ✅ Sudah diset (Gunakan password yang Anda buat)
 • Status: Aktif ✅
 
 💻 *Cara Login ke Dashboard:*
 1. Buka website dashboard
 2. Masukkan User ID: \`${telegramUserId}\`
-3. Klik Login
+3. Masukkan Password Anda
+4. Klik Login
 
 📸 *Cara Menggunakan Bot:*
 1. Kirim screenshot hasil LIVE Anda

@@ -1,62 +1,79 @@
 const { query } = require('../config/db');
 const jwt = require('jsonwebtoken');
+const bcrypt = require('bcryptjs');
 
 /**
  * LOGIN CONTROLLER
- * Autentikasi user dan generate JWT token
+ * Autentikasi user dengan Telegram ID dan Password
+ * Fitur: Validasi Password, Cek Approval, Cek Status Aktif
  */
 const login = async (req, res) => {
     try {
-        const { telegram_user_id, username } = req.body;
+        const { telegram_user_id, password } = req.body;
 
-        // Validasi input
-        if (!telegram_user_id) {
+        // 1. Validasi input dasar
+        if (!telegram_user_id || !password) {
             return res.status(400).json({
                 success: false,
-                message: 'Telegram User ID is required'
+                message: 'Telegram User ID and Password are required'
             });
         }
 
-        // Cari user di database berdasarkan telegram_user_id
+        // 2. Cari user di database
+        // Kita perlu mengambil password_hash, is_approved, dan is_active untuk validasi
         const userQuery = `
-            SELECT id, telegram_user_id, username, full_name, role, is_active
+            SELECT id, telegram_user_id, username, full_name, role, is_active, is_approved, password_hash
             FROM users
             WHERE telegram_user_id = $1
         `;
         
         const result = await query(userQuery, [telegram_user_id]);
 
-        // Jika user tidak ditemukan, buat user baru (auto-register)
-        let user;
+        // 3. Jika user tidak ditemukan
         if (result.rows.length === 0) {
-            const insertQuery = `
-                INSERT INTO users (telegram_user_id, username, full_name, role)
-                VALUES ($1, $2, $3, $4)
-                RETURNING id, telegram_user_id, username, full_name, role, is_active
-            `;
-            
-            const newUser = await query(insertQuery, [
-                telegram_user_id,
-                username || `user_${telegram_user_id}`,
-                username || 'New User',
-                'HOST' // Default role untuk user baru
-            ]);
-            
-            user = newUser.rows[0];
-            console.log('✅ New user registered:', user.telegram_user_id);
-        } else {
-            user = result.rows[0];
-        }
-
-        // Cek apakah user aktif
-        if (!user.is_active) {
-            return res.status(403).json({
+            return res.status(401).json({
                 success: false,
-                message: 'User account is inactive'
+                message: 'Invalid Telegram User ID or Password'
             });
         }
 
-        // Generate JWT token
+        const user = result.rows[0];
+
+        // 4. Cek apakah user sudah mengatur password (via Bot)
+        if (!user.password_hash) {
+            return res.status(401).json({
+                success: false,
+                message: 'Please set your password via Telegram Bot first (/setpassword)'
+            });
+        }
+
+        // 5. Verifikasi Password dengan Bcrypt
+        const isPasswordValid = await bcrypt.compare(password, user.password_hash);
+        
+        if (!isPasswordValid) {
+            return res.status(401).json({
+                success: false,
+                message: 'Invalid Telegram User ID or Password'
+            });
+        }
+
+        // 6. Cek Approval (Persetujuan Manager)
+        if (!user.is_approved) {
+            return res.status(403).json({
+                success: false,
+                message: 'Your account is pending approval from Manager'
+            });
+        }
+
+        // 7. Cek Status Aktif (Banned/Inactive)
+        if (!user.is_active) {
+            return res.status(403).json({
+                success: false,
+                message: 'Your account has been deactivated'
+            });
+        }
+
+        // 8. Generate JWT Token
         const token = jwt.sign(
             {
                 id: user.id,
@@ -67,7 +84,9 @@ const login = async (req, res) => {
             { expiresIn: '7d' } // Token berlaku 7 hari
         );
 
-        // Response sukses
+        // 9. Response Sukses
+        console.log(`✅ User logged in: ${user.username || user.telegram_user_id} (${user.role})`);
+        
         res.status(200).json({
             success: true,
             message: 'Login successful',
@@ -83,8 +102,6 @@ const login = async (req, res) => {
             }
         });
 
-        console.log(`✅ User logged in: ${user.username} (${user.role})`);
-
     } catch (error) {
         console.error('❌ Login error:', error);
         res.status(500).json({
@@ -97,13 +114,13 @@ const login = async (req, res) => {
 
 /**
  * GET CURRENT USER
- * Mendapatkan info user yang sedang login
+ * Mendapatkan info user yang sedang login berdasarkan Token JWT
  */
 const getCurrentUser = async (req, res) => {
     try {
-        // Data user sudah ada di req.user (dari middleware)
+        // req.user.id didapat dari middleware auth (verifyToken)
         const userQuery = `
-            SELECT id, telegram_user_id, username, full_name, role, created_at
+            SELECT id, telegram_user_id, username, full_name, role, created_at, is_active, is_approved
             FROM users
             WHERE id = $1
         `;
