@@ -2,15 +2,16 @@
   "name": "backend",
   "version": "1.0.0",
   "description": "Live Session Reporting Backend",
-  "main": "server.js",
+  "main": "src/server.js",
   "scripts": {
-    "start": "node server.js",
-    "dev": "nodemon server.js"
+    "start": "node src/server.js",
+    "dev": "nodemon src/server.js"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@tanstack/react-query": "^5.90.12",
     "axios": "^1.6.0",
     "bcryptjs": "^3.0.3",
     "dotenv": "^16.3.1",

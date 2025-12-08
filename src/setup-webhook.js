@@ -1,3 +1,4 @@
+require('./config/env');
 const { setupWebhook } = require('./controllers/telegramController');
 const readline = require('readline');
 

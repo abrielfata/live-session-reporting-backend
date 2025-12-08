@@ -1,5 +1,6 @@
 const { query } = require('../config/db');
 const bcrypt = require('bcryptjs'); // ✅ NEW: For password hashing
+const AppError = require('../utils/appError');
 // Tambahkan impor untuk fungsi notifikasi Telegram
 const {
     sendAccountDeactivatedNotification,
@@ -144,10 +145,7 @@ const createHost = async (req, res) => {
 
         // Validasi input
         if (!telegram_user_id || !full_name) {
-            return res.status(400).json({
-                success: false,
-                message: 'Telegram User ID and Full Name are required'
-            });
+            return next(new AppError('Telegram User ID and Full Name are required', 400, 'VALIDATION_ERROR'));
         }
 
         // Cek apakah telegram_user_id sudah ada
@@ -235,10 +233,7 @@ const updateHost = async (req, res) => {
         const checkResult = await query(checkQuery, [id]);
 
         if (checkResult.rows.length === 0) {
-            return res.status(404).json({
-                success: false,
-                message: 'Host not found'
-            });
+            return next(new AppError('Host not found', 404, 'NOT_FOUND'));
         }
 
         const existingHost = checkResult.rows[0];
@@ -363,10 +358,7 @@ const deleteHost = async (req, res) => {
         const checkResult = await query(checkQuery, [id]);
 
         if (checkResult.rows.length === 0) {
-            return res.status(404).json({
-                success: false,
-                message: 'Host not found'
-            });
+            return next(new AppError('Host not found', 404, 'NOT_FOUND'));
         }
 
         const hostName = checkResult.rows[0].full_name;
@@ -411,10 +403,7 @@ const toggleHostStatus = async (req, res) => {
         const checkResult = await query(checkQuery, [id]);
 
         if (checkResult.rows.length === 0) {
-            return res.status(404).json({
-                success: false,
-                message: 'Host not found'
-            });
+            return next(new AppError('Host not found', 404, 'NOT_FOUND'));
         }
 
         const host = checkResult.rows[0];

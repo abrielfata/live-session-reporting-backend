@@ -4,6 +4,7 @@ const {
     sendReportVerifiedNotification,
     sendReportRejectedNotification
 } = require('./telegramController');
+const AppError = require('../utils/appError');
 
 /**
  * GET ALL REPORTS (Manager Only)
@@ -226,10 +227,7 @@ const updateReportStatus = async (req, res) => {
         // Validasi status
         const validStatuses = ['VERIFIED', 'REJECTED', 'PENDING'];
         if (!status || !validStatuses.includes(status)) {
-            return res.status(400).json({
-                success: false,
-                message: 'Invalid status. Must be VERIFIED, REJECTED, or PENDING'
-            });
+            return next(new AppError('Invalid status. Must be VERIFIED, REJECTED, or PENDING', 400, 'VALIDATION_ERROR'));
         }
 
         // Cek apakah laporan ada DAN ambil data host (untuk notifikasi)
@@ -248,10 +246,7 @@ const updateReportStatus = async (req, res) => {
         const checkResult = await query(checkQuery, [id]);
 
         if (checkResult.rows.length === 0) {
-            return res.status(404).json({
-                success: false,
-                message: 'Report not found'
-            });
+            return next(new AppError('Report not found', 404, 'NOT_FOUND'));
         }
 
         const reportData = checkResult.rows[0];
@@ -301,12 +296,7 @@ const updateReportStatus = async (req, res) => {
         console.log(`📲 Notification sent to host ${reportData.host_name} (${reportData.telegram_user_id})`);
 
     } catch (error) {
-        console.error('❌ Update report status error:', error);
-        res.status(500).json({
-            success: false,
-            message: 'Internal server error',
-            error: error.message
-        });
+        return next(error);
     }
 };
 

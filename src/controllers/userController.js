@@ -3,6 +3,7 @@ const {
     sendAccountApprovedNotification, 
     sendAccountRejectedNotification 
 } = require('./telegramController');
+const AppError = require('../utils/appError');
 
 /**
  * GET ALL PENDING USERS (Manager Only)
@@ -57,10 +58,7 @@ const approveUser = async (req, res) => {
         const checkResult = await query(checkQuery, [userId]);
 
         if (checkResult.rows.length === 0) {
-            return res.status(404).json({
-                success: false,
-                message: 'User not found'
-            });
+            return next(new AppError('User not found', 404, 'NOT_FOUND'));
         }
 
         const user = checkResult.rows[0];
@@ -118,10 +116,7 @@ const rejectUser = async (req, res) => {
         const checkResult = await query(checkQuery, [userId]);
 
         if (checkResult.rows.length === 0) {
-            return res.status(404).json({
-                success: false,
-                message: 'User not found'
-            });
+            return next(new AppError('User not found', 404, 'NOT_FOUND'));
         }
 
         const user = checkResult.rows[0];
@@ -146,12 +141,7 @@ const rejectUser = async (req, res) => {
         console.log(`📲 Rejection notification sent to Telegram user ${user.telegram_user_id}`);
 
     } catch (error) {
-        console.error('❌ Reject user error:', error);
-        res.status(500).json({
-            success: false,
-            message: 'Internal server error',
-            error: error.message
-        });
+        return next(error);
     }
 };
 
