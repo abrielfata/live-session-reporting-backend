@@ -6,8 +6,8 @@ const fs = require('fs');
  * Ekstrak teks dari gambar dengan retry mechanism
  */
 const extractTextFromImage = async (imagePath = null, imageUrl = null, retryCount = 0) => {
-    const maxRetries = 2;
-    const timeout = 25000; // 25 detik
+    const maxRetries = parseInt(process.env.OCR_MAX_RETRIES || '3', 10);
+    const timeout = parseInt(process.env.OCR_TIMEOUT_MS || '45000', 10); // default 45 detik
 
     try {
         console.log(`\n🔍 ========== OCR ATTEMPT ${retryCount + 1}/${maxRetries + 1} ==========`);
@@ -125,6 +125,11 @@ const parseGMVFromText = (text) => {
         console.log('\n🔍 Starting GMV parsing...');
         
         let cleanText = text.replace(/\s+/g, ' ').toUpperCase();
+        // Toleransi kesalahan OCR: BMV/GMY/GMW sering salah baca sebagai GMV
+        cleanText = cleanText
+            .replace(/BMV/g, 'GMV')
+            .replace(/GMY/g, 'GMV')
+            .replace(/GMW/g, 'GMV');
         console.log('📝 Cleaned text (first 200 chars):', cleanText.substring(0, 200));
 
         const numericRegex = /[\d.,K]+/i;

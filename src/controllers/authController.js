@@ -1,6 +1,7 @@
 const { query } = require('../config/db');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
+const AppError = require('../utils/appError');
 
 /**
  * LOGIN CONTROLLER - EMAIL & PASSWORD
@@ -11,19 +12,13 @@ const login = async (req, res) => {
 
         // 1. Validasi input
         if (!email || !password) {
-            return res.status(400).json({
-                success: false,
-                message: 'Email and Password are required'
-            });
+            return next(new AppError('Email and Password are required', 400, 'VALIDATION_ERROR'));
         }
 
         // 2. Validasi format email
         const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
         if (!emailRegex.test(email)) {
-            return res.status(400).json({
-                success: false,
-                message: 'Invalid email format'
-            });
+            return next(new AppError('Invalid email format', 400, 'VALIDATION_ERROR'));
         }
 
         // 3. Cari user berdasarkan email
@@ -37,46 +32,31 @@ const login = async (req, res) => {
         const result = await query(userQuery, [email]);
 
         if (result.rows.length === 0) {
-            return res.status(401).json({
-                success: false,
-                message: 'Invalid email or password'
-            });
+            return next(new AppError('Invalid email or password', 401, 'AUTH_INVALID'));
         }
 
         const user = result.rows[0];
 
         // 4. Cek password hash
         if (!user.password_hash) {
-            return res.status(401).json({
-                success: false,
-                message: 'Please set your password first'
-            });
+            return next(new AppError('Please set your password first', 401, 'AUTH_NO_PASSWORD'));
         }
 
         // 5. Verifikasi password
         const isPasswordValid = await bcrypt.compare(password, user.password_hash);
         
         if (!isPasswordValid) {
-            return res.status(401).json({
-                success: false,
-                message: 'Invalid email or password'
-            });
+            return next(new AppError('Invalid email or password', 401, 'AUTH_INVALID'));
         }
 
         // 6. Cek approval
         if (!user.is_approved) {
-            return res.status(403).json({
-                success: false,
-                message: 'Your account is pending approval'
-            });
+            return next(new AppError('Your account is pending approval', 403, 'AUTH_PENDING'));
         }
 
         // 7. Cek status aktif
         if (!user.is_active) {
-            return res.status(403).json({
-                success: false,
-                message: 'Your account has been deactivated'
-            });
+            return next(new AppError('Your account has been deactivated', 403, 'AUTH_INACTIVE'));
         }
 
         // 8. Generate JWT token
@@ -109,12 +89,7 @@ const login = async (req, res) => {
         });
 
     } catch (error) {
-        console.error('❌ Login error:', error);
-        res.status(500).json({
-            success: false,
-            message: 'Internal server error',
-            error: error.message
-        });
+        return next(error);
     }
 };
 
@@ -133,10 +108,7 @@ const getCurrentUser = async (req, res) => {
         const result = await query(userQuery, [req.user.id]);
 
         if (result.rows.length === 0) {
-            return res.status(404).json({
-                success: false,
-                message: 'User not found'
-            });
+            return next(new AppError('User not found', 404, 'NOT_FOUND'));
         }
 
         res.status(200).json({
@@ -145,12 +117,7 @@ const getCurrentUser = async (req, res) => {
         });
 
     } catch (error) {
-        console.error('❌ Get current user error:', error);
-        res.status(500).json({
-            success: false,
-            message: 'Internal server error',
-            error: error.message
-        });
+        return next(error);
     }
 };
 
