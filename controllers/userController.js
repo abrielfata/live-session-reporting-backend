@@ -15,6 +15,7 @@ const getPendingUsers = async (req, res) => {
                 telegram_user_id,
                 username,
                 full_name,
+                email,
                 role,
                 is_approved,
                 created_at
@@ -45,14 +46,14 @@ const getPendingUsers = async (req, res) => {
 
 /**
  * APPROVE USER (Manager Only)
- * ✅ NOW SENDS TELEGRAM NOTIFICATION
+ * ✅ FIXED: Now sets is_active = true when approving
  */
 const approveUser = async (req, res) => {
     try {
         const { userId } = req.params;
 
         // Cek apakah user ada
-        const checkQuery = 'SELECT id, telegram_user_id, full_name FROM users WHERE id = $1';
+        const checkQuery = 'SELECT id, telegram_user_id, full_name, email FROM users WHERE id = $1';
         const checkResult = await query(checkQuery, [userId]);
 
         if (checkResult.rows.length === 0) {
@@ -64,20 +65,24 @@ const approveUser = async (req, res) => {
 
         const user = checkResult.rows[0];
 
-        // Update is_approved menjadi true
+        // ✅ FIXED: Update both is_approved AND is_active to true
         const updateQuery = `
             UPDATE users
-            SET is_approved = true, updated_at = CURRENT_TIMESTAMP
+            SET 
+                is_approved = true, 
+                is_active = true,
+                updated_at = CURRENT_TIMESTAMP
             WHERE id = $1
-            RETURNING id, telegram_user_id, username, full_name, is_approved
+            RETURNING id, telegram_user_id, username, full_name, email, is_approved, is_active
         `;
 
         const result = await query(updateQuery, [userId]);
 
-        // ✅ SEND TELEGRAM NOTIFICATION
+        // ✅ SEND TELEGRAM NOTIFICATION with email
         await sendAccountApprovedNotification(
             user.telegram_user_id, 
-            user.full_name
+            user.full_name,
+            user.email // Pass email for notification
         );
 
         res.status(200).json({
@@ -87,6 +92,7 @@ const approveUser = async (req, res) => {
         });
 
         console.log(`✅ User ${result.rows[0].full_name} approved by Manager`);
+        console.log(`✅ Account status set to ACTIVE`);
         console.log(`📲 Notification sent to Telegram user ${user.telegram_user_id}`);
 
     } catch (error) {
