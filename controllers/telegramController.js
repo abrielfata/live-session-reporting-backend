@@ -5,7 +5,7 @@ const { extractTextFromImage } = require('../services/ocrService');
 const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
-const bcrypt = require('bcryptjs'); // ✅ TAMBAHKAN LIBRARY INI
+const bcrypt = require('bcryptjs'); // ✅ Library wajib
 
 // ============================================
 // STATE MANAGEMENT
@@ -37,7 +37,7 @@ const clearState = (userId) => {
 };
 
 // ============================================
-// CHECK USER STATUS HELPER (Untuk Photo Process)
+// CHECK USER STATUS HELPER
 // ============================================
 const checkUserStatus = async (telegramUserId) => {
     const userResult = await query(
@@ -61,22 +61,21 @@ const checkUserStatus = async (telegramUserId) => {
 };
 
 // ============================================
-// ✅ HANDLE START COMMAND - DENGAN PASSWORD SETUP
+// ✅ HANDLE START COMMAND (UPDATED)
 // ============================================
-
 const handleStartCommand = async (chatId, telegramUserId, username) => {
     clearState(telegramUserId);
     
     const userResult = await query(
-        'SELECT id, full_name, role, is_approved, is_active, password_hash FROM users WHERE telegram_user_id = $1',
+        'SELECT id, full_name, email, role, status, password_hash, is_approved, is_active FROM users WHERE telegram_user_id = $1',
         [telegramUserId]
     );
 
     if (userResult.rows.length === 0) {
         // ✅ NEW USER - Create with PENDING status
         await query(
-            `INSERT INTO users (telegram_user_id, username, full_name, role)
-             VALUES ($1, $2, 'PENDING', 'HOST')`,
+            `INSERT INTO users (telegram_user_id, username, full_name, role, status, is_approved, is_active)
+             VALUES ($1, $2, 'PENDING', 'HOST', 'PENDING', false, false)`,
             [telegramUserId, username || `user_${telegramUserId}`]
         );
         
@@ -85,81 +84,101 @@ const handleStartCommand = async (chatId, telegramUserId, username) => {
         await sendTelegramMessage(
             chatId,
             `👋 *Selamat datang di Live Session Reporting Bot!*\n\n` +
-            `Untuk melanjutkan registrasi, silakan:\n\n` +
-            `1️⃣ Masukkan *nama lengkap* Anda\n` +
+            `Untuk melanjutkan registrasi, ikuti langkah berikut:\n\n` +
+            `1️⃣ Masukkan *Nama Lengkap* Anda\n` +
+            `2️⃣ Masukkan *Email* Anda\n` +
+            `3️⃣ Buat *Password* untuk login dashboard\n\n` +
+            `Mari kita mulai! Silakan masukkan *nama lengkap* Anda:\n` +
             `Contoh: Budi Santoso`,
             { parse_mode: 'Markdown' }
         );
         console.log('✅ New user started registration:', telegramUserId);
         
-    } else if (userResult.rows[0].full_name === 'PENDING') {
-        // User sudah mulai registrasi tapi belum selesai
-        setState(telegramUserId, 'WAITING_FULL_NAME');
-        await sendTelegramMessage(
-            chatId,
-            `Silakan masukkan *nama lengkap* Anda untuk melanjutkan registrasi.`,
-            { parse_mode: 'Markdown' }
-        );
-        
-    } else if (!userResult.rows[0].password_hash) {
-        // ✅ User sudah punya nama tapi belum set password
-        setState(telegramUserId, 'WAITING_PASSWORD', { full_name: userResult.rows[0].full_name });
-        await sendTelegramMessage(
-            chatId,
-            `🔐 *Setup Password*\n\n` +
-            `Halo *${userResult.rows[0].full_name}*!\n\n` +
-            `Silakan buat password untuk login ke dashboard:\n\n` +
-            `⚠️ Password minimal 6 karakter\n` +
-            `💡 Gunakan kombinasi huruf dan angka untuk keamanan`,
-            { parse_mode: 'Markdown' }
-        );
-        
-    } else if (!userResult.rows[0].is_approved) {
-        // User sudah lengkap tapi belum approved
-        await sendTelegramMessage(
-            chatId,
-            `⏳ *Akun Anda Belum Disetujui*\n\n` +
-            `Halo *${userResult.rows[0].full_name}*!\n\n` +
-            `📋 *Informasi Login Anda:*\n` +
-            `• User ID: \`${telegramUserId}\`\n` +
-            `• Password: ✅ Sudah diset\n\n` +
-            `Pendaftaran Anda sedang menunggu persetujuan dari Manager.\n` +
-            `Anda akan mendapat notifikasi setelah akun Anda diaktifkan.`,
-            { parse_mode: 'Markdown' }
-        );
-        
-    } else if (!userResult.rows[0].is_active) {
-        // User di-deactivate
-        await sendTelegramMessage(
-            chatId,
-            `❌ *Akun Anda Telah Dinonaktifkan*\n\n` +
-            `Halo *${userResult.rows[0].full_name}*!\n\n` +
-            `Akun Anda saat ini dalam status tidak aktif.\n` +
-            `Silakan hubungi Manager untuk informasi lebih lanjut.`,
-            { parse_mode: 'Markdown' }
-        );
-        
     } else {
-        // User sudah approved dan aktif
-        await sendTelegramMessage(
-            chatId,
-            `✅ *Selamat datang kembali, ${userResult.rows[0].full_name}!*\n\n` +
-            `📋 *Informasi Login Anda:*\n` +
-            `• User ID: \`${telegramUserId}\`\n` +
-            `• Password: ✅ Sudah diset\n\n` +
-            `📸 *Cara Menggunakan Bot:*\n` +
-            `Kirimkan screenshot hasil LIVE Anda, dan bot akan otomatis memproses GMV dan durasi.`,
-            { parse_mode: 'Markdown' }
-        );
+        const user = userResult.rows[0];
+        
+        // Check registration progress
+        if (user.full_name === 'PENDING') {
+            setState(telegramUserId, 'WAITING_FULL_NAME');
+            await sendTelegramMessage(
+                chatId,
+                `Silakan masukkan *nama lengkap* Anda untuk melanjutkan registrasi.`,
+                { parse_mode: 'Markdown' }
+            );
+            
+        } else if (!user.email) {
+            // ✅ User ada nama, tapi belum email
+            setState(telegramUserId, 'WAITING_EMAIL', { full_name: user.full_name });
+            await sendTelegramMessage(
+                chatId,
+                `📧 *Langkah 2: Email*\n\n` +
+                `Halo *${user.full_name}*!\n\n` +
+                `Silakan masukkan alamat email Anda:\n` +
+                `Contoh: budi.santoso@example.com\n\n` +
+                `Email ini akan digunakan untuk login ke dashboard.`,
+                { parse_mode: 'Markdown' }
+            );
+            
+        } else if (!user.password_hash) {
+            // ✅ User ada email, tapi belum password
+            setState(telegramUserId, 'WAITING_PASSWORD', { 
+                full_name: user.full_name,
+                email: user.email 
+            });
+            await sendTelegramMessage(
+                chatId,
+                `🔐 *Langkah 3: Password*\n\n` +
+                `Halo *${user.full_name}*!\n\n` +
+                `Email: ${user.email}\n\n` +
+                `Sekarang buat password untuk login ke dashboard:\n\n` +
+                `⚠️ Password minimal 6 karakter\n` +
+                `💡 Gunakan kombinasi huruf dan angka`,
+                { parse_mode: 'Markdown' }
+            );
+            
+        } else if (!user.is_approved) {
+            await sendTelegramMessage(
+                chatId,
+                `⏳ *Akun Anda Belum Disetujui*\n\n` +
+                `Halo *${user.full_name}*!\n\n` +
+                `📋 *Informasi Login Anda:*\n` +
+                `• Email: ${user.email}\n` +
+                `• Password: ✅ Sudah diset\n\n` +
+                `Pendaftaran Anda sedang menunggu persetujuan dari Manager.\n` +
+                `Anda akan mendapat notifikasi setelah akun Anda diaktifkan.`,
+                { parse_mode: 'Markdown' }
+            );
+            
+        } else if (!user.is_active) {
+            await sendTelegramMessage(
+                chatId,
+                `❌ *Akun Anda Telah Dinonaktifkan*\n\n` +
+                `Halo *${user.full_name}*!\n\n` +
+                `Akun Anda saat ini dalam status tidak aktif.\n` +
+                `Silakan hubungi Manager untuk informasi lebih lanjut.`,
+                { parse_mode: 'Markdown' }
+            );
+            
+        } else {
+            // User Active
+            await sendTelegramMessage(
+                chatId,
+                `✅ *Selamat datang kembali, ${user.full_name}!*\n\n` +
+                `📋 *Informasi Login Anda:*\n` +
+                `• Email: ${user.email}\n` +
+                `• Password: ✅ Sudah diset\n\n` +
+                `📸 *Cara Menggunakan Bot:*\n` +
+                `Kirimkan screenshot hasil LIVE Anda, dan bot akan otomatis memproses GMV dan durasi.`,
+                { parse_mode: 'Markdown' }
+            );
+        }
     }
 };
 
 // ============================================
 // ✅ HANDLE FULL NAME INPUT
 // ============================================
-
 const handleFullNameInput = async (chatId, telegramUserId, username, fullName) => {
-    // Validasi nama
     if (fullName.length < 3) {
         await sendTelegramMessage(
             chatId,
@@ -175,17 +194,16 @@ const handleFullNameInput = async (chatId, telegramUserId, username, fullName) =
         [fullName, username || `user_${telegramUserId}`, telegramUserId]
     );
     
-    // ✅ LANJUT KE PASSWORD SETUP
-    setState(telegramUserId, 'WAITING_PASSWORD', { full_name: fullName });
+    // ✅ LANJUT KE EMAIL INPUT
+    setState(telegramUserId, 'WAITING_EMAIL', { full_name: fullName });
     
     await sendTelegramMessage(
         chatId,
         `✅ Nama berhasil disimpan!\n\n` +
-        `🔐 *Setup Password*\n\n` +
-        `Sekarang, buat password untuk login ke dashboard:\n\n` +
-        `⚠️ Password minimal 6 karakter\n` +
-        `💡 Gunakan kombinasi huruf dan angka untuk keamanan\n\n` +
-        `Ketik password Anda sekarang:`,
+        `📧 *Langkah 2: Email*\n\n` +
+        `Silakan masukkan alamat email Anda:\n` +
+        `Contoh: budi.santoso@example.com\n\n` +
+        `Email ini akan digunakan untuk login ke dashboard.`,
         { parse_mode: 'Markdown' }
     );
     
@@ -193,9 +211,77 @@ const handleFullNameInput = async (chatId, telegramUserId, username, fullName) =
 };
 
 // ============================================
-// ✅ NEW: HANDLE PASSWORD INPUT
+// ✅ NEW: HANDLE EMAIL INPUT
 // ============================================
+const handleEmailInput = async (chatId, telegramUserId, email) => {
+    const currentState = getState(telegramUserId);
+    
+    if (!currentState || currentState.state !== 'WAITING_EMAIL') {
+        return false;
+    }
+    
+    // Validasi email format
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+        await sendTelegramMessage(
+            chatId,
+            '❌ *Format email tidak valid!*\n\n' +
+            'Silakan masukkan email yang benar.\n' +
+            'Contoh: budi.santoso@example.com',
+            { parse_mode: 'Markdown' }
+        );
+        return true;
+    }
+    
+    // Check if email already exists
+    const existingEmail = await query(
+        'SELECT id FROM users WHERE LOWER(email) = LOWER($1) AND telegram_user_id != $2',
+        [email, telegramUserId]
+    );
+    
+    if (existingEmail.rows.length > 0) {
+        await sendTelegramMessage(
+            chatId,
+            '❌ *Email sudah terdaftar!*\n\n' +
+            'Email ini sudah digunakan oleh user lain.\n' +
+            'Silakan gunakan email yang berbeda.',
+            { parse_mode: 'Markdown' }
+        );
+        return true;
+    }
+    
+    // Save email to database
+    await query(
+        `UPDATE users 
+         SET email = $1, updated_at = CURRENT_TIMESTAMP
+         WHERE telegram_user_id = $2`,
+        [email.toLowerCase(), telegramUserId]
+    );
+    
+    // ✅ LANJUT KE PASSWORD SETUP
+    setState(telegramUserId, 'WAITING_PASSWORD', { 
+        full_name: currentState.data.full_name,
+        email: email 
+    });
+    
+    await sendTelegramMessage(
+        chatId,
+        `✅ Email berhasil disimpan!\n\n` +
+        `🔐 *Langkah 3: Password*\n\n` +
+        `Sekarang buat password untuk login ke dashboard:\n\n` +
+        `⚠️ Password minimal 6 karakter\n` +
+        `💡 Gunakan kombinasi huruf dan angka untuk keamanan\n\n` +
+        `Ketik password Anda sekarang:`,
+        { parse_mode: 'Markdown' }
+    );
+    
+    console.log('✅ Email saved for:', email);
+    return true;
+};
 
+// ============================================
+// ✅ HANDLE PASSWORD INPUT
+// ============================================
 const handlePasswordInput = async (chatId, telegramUserId, password) => {
     const currentState = getState(telegramUserId);
     
@@ -203,7 +289,6 @@ const handlePasswordInput = async (chatId, telegramUserId, password) => {
         return false;
     }
     
-    // Validasi password
     if (password.length < 6) {
         await sendTelegramMessage(
             chatId,
@@ -225,41 +310,42 @@ const handlePasswordInput = async (chatId, telegramUserId, password) => {
         return true;
     }
     
-    // Hash password
     const passwordHash = await bcrypt.hash(password, 10);
     
-    // Save to database
     await query(
         `UPDATE users 
-         SET password_hash = $1, updated_at = CURRENT_TIMESTAMP
+         SET password_hash = $1, 
+             status = 'PENDING',
+             is_approved = false,
+             is_active = false,
+             updated_at = CURRENT_TIMESTAMP
          WHERE telegram_user_id = $2`,
         [passwordHash, telegramUserId]
     );
     
     clearState(telegramUserId);
     
-    const fullName = currentState.data.full_name;
+    const { full_name, email } = currentState.data;
     
-    // ✅ SEND SUCCESS MESSAGE WITH LOGIN INFO
     await sendTelegramMessage(
         chatId,
-        `✅ *Registrasi Selesai!*\n\n` +
-        `Terima kasih, *${fullName}*!\n\n` +
+        `🎉 *Registrasi Selesai!*\n\n` +
+        `Terima kasih, *${full_name}*!\n\n` +
         `📋 *Informasi Login Dashboard:*\n` +
-        `• User ID: \`${telegramUserId}\`\n` +
+        `• Email: ${email}\n` +
         `• Password: ✅ Sudah diset\n\n` +
         `⏳ *Status:* Menunggu persetujuan Manager\n\n` +
         `💡 *Cara Login ke Dashboard:*\n` +
         `1. Buka website dashboard\n` +
-        `2. Masukkan User ID: \`${telegramUserId}\`\n` +
+        `2. Masukkan Email: ${email}\n` +
         `3. Masukkan Password yang Anda buat\n` +
         `4. Klik Login\n\n` +
         `Anda akan mendapat notifikasi setelah akun diaktifkan oleh Manager.\n\n` +
-        `_Simpan User ID dan Password Anda dengan aman!_ 🔐`,
+        `_Simpan Email dan Password Anda dengan aman!_ 🔐`,
         { parse_mode: 'Markdown' }
     );
     
-    console.log('✅ Password set for user:', fullName, 'User ID:', telegramUserId);
+    console.log('✅ Registration completed:', { full_name, email, telegram_user_id: telegramUserId });
     return true;
 };
 
@@ -476,7 +562,7 @@ const handleConfirmation = async (chatId, telegramUserId, textInput) => {
 };
 
 // ============================================
-// ✅ UPDATE: HANDLE TEXT INPUT
+// ✅ HANDLE TEXT INPUT (UPDATED)
 // ============================================
 
 const handleTextInput = async (chatId, telegramUserId, username, textInput) => {
@@ -489,6 +575,12 @@ const handleTextInput = async (chatId, telegramUserId, username, textInput) => {
     }
 
     const currentState = getState(telegramUserId);
+    
+    // ✅ Check if waiting for email
+    if (currentState && currentState.state === 'WAITING_EMAIL') {
+        await handleEmailInput(chatId, telegramUserId, textInput);
+        return;
+    }
     
     // ✅ Check if waiting for password
     if (currentState && currentState.state === 'WAITING_PASSWORD') {
@@ -571,10 +663,11 @@ const handleWebhook = async (req, res) => {
 };
 
 // ============================================
-// NOTIFICATION FUNCTIONS
+// NOTIFICATION FUNCTIONS (UPDATED)
 // ============================================
 
-const sendAccountApprovedNotification = async (telegramUserId, fullName) => {
+// ✅ UPDATED: Now accepts `email` parameter
+const sendAccountApprovedNotification = async (telegramUserId, fullName, email) => {
     try {
         const message = `
 🎉 *Akun Anda Telah Diaktifkan!*
@@ -584,13 +677,13 @@ Halo *${fullName}*!
 ✅ Selamat! Akun Anda telah disetujui oleh Manager.
 
 📋 *Informasi Login Dashboard:*
-• User ID: \`${telegramUserId}\`
+• Email: ${email}
 • Password: ✅ Sudah diset (Gunakan password yang Anda buat)
 • Status: Aktif ✅
 
 💻 *Cara Login ke Dashboard:*
 1. Buka website dashboard
-2. Masukkan User ID: \`${telegramUserId}\`
+2. Masukkan Email: ${email}
 3. Masukkan Password Anda
 4. Klik Login
 
@@ -604,7 +697,7 @@ Selamat bekerja! 🚀
         `;
 
         await sendTelegramMessage(telegramUserId, message, { parse_mode: 'Markdown' });
-        console.log(`✅ Notification sent to ${fullName} (${telegramUserId})`);
+        console.log(`✅ Notification sent to ${fullName} (${email})`);
     } catch (error) {
         console.error('❌ Send approval notification error:', error.message);
     }
@@ -734,7 +827,8 @@ Terima kasih.
     }
 };
 
-const sendAccountReactivatedNotification = async (telegramUserId, fullName) => {
+// ✅ UPDATED: Now accepts `email` parameter
+const sendAccountReactivatedNotification = async (telegramUserId, fullName, email) => {
     try {
         const message = `
 ✅ *Akun Anda Telah Diaktifkan Kembali!*
@@ -744,7 +838,7 @@ Halo *${fullName}*,
 Kabar baik! Akun Anda telah diaktifkan kembali oleh Manager.
 
 📋 *Informasi Login Dashboard:*
-• User ID: \`${telegramUserId}\`
+• Email: ${email}
 • Status: Aktif ✅
 
 Anda sekarang dapat mengirim laporan GMV LIVE session Anda lagi.
@@ -753,7 +847,7 @@ Selamat bekerja! 🚀
         `;
 
         await sendTelegramMessage(telegramUserId, message, { parse_mode: 'Markdown' });
-        console.log(`✅ Reactivation notification sent to ${fullName} (${telegramUserId})`);
+        console.log(`✅ Reactivation notification sent to ${fullName} (${email})`);
     } catch (error) {
         console.error('❌ Send reactivation notification error:', error.message);
     }
