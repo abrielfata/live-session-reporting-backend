@@ -10,6 +10,7 @@ const telegramRoutes = require('./routes/telegramRoutes');
 const reportRoutes = require('./routes/reportRoutes');
 const userRoutes = require('./routes/userRoutes');
 const hostRoutes = require('./routes/hostRoutes');
+const { handleWebhook } = require('./controllers/telegramController');
 
 const app = express();
 
@@ -40,6 +41,7 @@ app.get('/', (req, res) => {
 // API Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/webhook', telegramRoutes);
+app.post('/api/telegram/webhook', handleWebhook);
 app.use('/api/reports', reportRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/hosts', hostRoutes);
